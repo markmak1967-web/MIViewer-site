@@ -202,7 +202,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.4.2', build: 8 };
+const BUILD = { ver: 'R0.4.3', build: 9 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -1854,6 +1854,7 @@ function drawVidOverlay() {
 }
 vo.addEventListener('click', e => {
   if (OBJ.drawing || performance.now() - (OBJ.lastTag || 0) < 400) return;
+  { const r = vo.getBoundingClientRect(), o = hitObject((e.clientX - r.left) / r.width * 2 - 1, (e.clientY - r.top) / r.height * 2 - 1); if (o) { OBJ.sel = o.id; document.querySelector('[data-p=pObjects]').click(); buildObjPane(); status(o.code + (o.label ? ' ' + o.label : '') + ' selected — Delete key removes it; “＋ Add outline” adds a new outline'); dirty(); return; } }
   const cur = S.cur; if (!cur || !cur.proj) return;
   const r = vo.getBoundingClientRect(), u = (e.clientX - r.left) / r.width * 2 - 1, v = (e.clientY - r.top) / r.height * 2 - 1;
   const g = cur.proj.toGround(u, v);
@@ -2512,6 +2513,7 @@ function installKeys() {
     else if (k === 'Escape' && OBJ.drawing) cancelTag();
     else if (k === 'Escape' && OBJ.job) OBJ.job.cancel = true;
     else if ((k === 't' || k === 'T') && !OBJ.drawing) startTag();
+    else if ((k === 'Delete' || k === 'Backspace') && OBJ.sel && !OBJ.drawing) { OBJ.confirmDel = OBJ.sel; document.querySelector('[data-p=pObjects]').click(); buildObjPane(); }
     else if (k === 'Enter' && S.drawing) finishAOI();
     else if (k === 'Escape' && S.drawing) { S.aoi = []; finishAOI(); }
   });
@@ -3152,7 +3154,7 @@ function finishTag(poly) {
   if (!poly || poly.length < 3) { cancelTag(); return; }
   const t = P.time(), c = polyC(poly), s = { t: S.frames.length ? S.frames[frameIndex(t)] : t, poly, c, g: groundOf(t, c), conf: 1, src: 'analyst' };
   let o;
-  if (OBJ.redraw) { o = OBJ.list.find(x => x.id === OBJ.redraw); if (o) addSample(o, s); }
+  if (OBJ.redraw) { o = OBJ.list.find(x => x.id === OBJ.redraw); if (o) { addSample(o, s); o.samples = o.samples.filter(x => x === s || x.src === 'analyst' || Math.abs(x.t - s.t) > frameDt() * 0.5); } }
   else {
     const id = uuid();
     o = { id, code: 'OBJ-' + id.replace(/-/g, '').slice(0, 4).toUpperCase(), label: '', cls: '', desc: '', color: OBJ.palette[OBJ.list.length % OBJ.palette.length], created: new Date().toISOString(), samples: [s], status: 'tagged' };
@@ -3160,7 +3162,7 @@ function finishTag(poly) {
   }
   OBJ.drawing = null; OBJ.redraw = null; OBJ.sel = o.id; OBJ.lastTag = performance.now();
   objectsChanged(); buildObjPane(true); tagBtn();
-  status(o.code + ' tagged at ' + tcAt(t) + ' — name it in OBJECTS, then Track ▶ / ◀ Track');
+  status(s.src === 'analyst' && o.samples.filter(x => x.src === 'analyst').length > 1 ? o.code + ' outline added at ' + tcAt(t) + ' — press play to continue tracking from here' : o.code + ' tagged at ' + tcAt(t) + ' — name it in OBJECTS, then press play');
   document.querySelector('[data-p=pObjects]').click();
   setTimeout(() => { const i = document.querySelector('#pObjects .mark.sel input[type=text]'); if (i) i.focus(); }, 50);
   dirty();
@@ -3293,7 +3295,8 @@ async function trkStart(o, seed, dir) {
   if (tsd < 12) { M = Int32Array.from(Array(PT).keys()); [tm, tsd] = stats(T, M, PT); } // flat interior: keep the edges and context
   const T0 = T.slice(), [t0m, t0sd] = stats(T0, M, PT); // seed template: anchors against update drift
   void sc0;
-  return { o, dir, seed, stopAt, f, TW, TH, M, PT, T, tm, tsd, T0, t0m, t0sd, prev: seed, vel: { gN: 0, gE: 0, u: 0, v: 0 }, lowRun: 0, suspect: [], lastGood: seed, fi: frameIndex(seed.t), n: 0, done: false, why: '' };
+  const kf = seed.src === 'analyst' ? seed.t : seed.kf;
+  return { kf, o, dir, seed, stopAt, f, TW, TH, M, PT, T, tm, tsd, T0, t0m, t0sd, prev: seed, vel: { gN: 0, gE: 0, u: 0, v: 0 }, lowRun: 0, suspect: [], lastGood: seed, fi: frameIndex(seed.t), n: 0, done: false, why: '' };
 }
 async function trkStep(K) {
   const { o, dir, f, TW, TH, M, PT, T, T0, t0m, t0sd, vel } = K;
@@ -3361,7 +3364,7 @@ async function trkStep(K) {
     const a = 0.5;
     if (!gate && g && prev.g && dt) { const mLat = mpdLat(g.lat), mLon = mpdLon(g.lat); vel.gN = lerp(vel.gN, (g.lat - prev.g.lat) * mLat / dt, a); vel.gE = lerp(vel.gE, (g.lon - prev.g.lon) * mLon / dt, a); }
     if (!gate && dt) { vel.u = lerp(vel.u, (c[0] - prev.c[0]) / dt, a); vel.v = lerp(vel.v, (c[1] - prev.c[1]) / dt, a); }
-    const smp = { t, poly, c, g, conf: +best.sc.toFixed(3), src: 'tracker' };
+    const smp = { t, poly, c, g, conf: +best.sc.toFixed(3), src: 'tracker', kf: K.kf };
     addSample(o, smp); K.prev = smp; K.n++;
     if (K.lowRun) K.suspect.push(smp); else { K.suspect = []; K.lastGood = smp; }
     // template update (slow) on confident matches
@@ -3421,7 +3424,7 @@ async function livePump() {
         busy = true;
         if (pick.e.t < now - 0.08 && !LIVE.hold) { LIVE.hold = true; vid.pause(); liveBtn(); }
         let K = LIVE.Ks.get(pick.o.id);
-        if (!K || K.done || K.prev !== pick.e) { K = await trkStart(pick.o, pick.e, 1); if (!K) throw new Error('tracker video'); LIVE.Ks.set(pick.o.id, K); }
+        if (!K || K.done || K.prev !== pick.e) { K = await trkStart(pick.o, pick.e, 1); if (!K) throw new Error('tracker video'); LIVE.Ks.set(pick.o.id, K); pick.o.status = 'tracking on playback…'; }
         const t0 = performance.now();
         while (!K.done && performance.now() - t0 < 45 && K.prev.t < P.time() + look) await trkStep(K);
         if (K.done) { trkFinish(K, true); LIVE.Ks.delete(pick.o.id); }
@@ -3471,6 +3474,18 @@ function pairEvents() {
   }
   return ev;
 }
+
+function removeKeyframe(o, k) {
+  const A = o.samples, nextK = A.find(x => x.src === 'analyst' && x.t > k.t + 1e-6), prevK = [...A].reverse().find(x => x.src === 'analyst' && x.t < k.t - 1e-6);
+  const lo = prevK ? prevK.t : -1, hi = nextK ? nextK.t : Infinity, from = x => isNum(x.kf) && Math.abs(x.kf - k.t) < 1e-3;
+  // drop the outline and the tracking derived from it (older samples without an origin: those between the neighbouring outlines)
+  o.samples = A.filter(x => x !== k && !(x.src !== 'analyst' && (isNum(x.kf) ? from(x) : x.t > lo + 1e-6 && x.t < hi - 1e-6)));
+  if (prevK) delete prevK.end;
+  o.status = 'outline at ' + tcOf(k.t) + ' removed with the tracking derived from it';
+  _objPolyCache.clear(); objectsChanged(); buildObjPane(); status(o.code + ' ' + o.status); dirty();
+}
+function deleteObject(o) { OBJ.list = OBJ.list.filter(x => x !== o); OBJ.confirmDel = null; if (OBJ.sel === o.id) OBJ.sel = null; if (typeof LIVE !== 'undefined') LIVE.Ks.delete(o.id); _objPolyCache.clear(); objectsChanged(); buildObjPane(); status(o.code + ' deleted'); dirty(); }
+function hitObject(u, v) { const t = P.time(); for (const o of [...OBJ.list].reverse()) { const s = objAt(o, t); if (s && pointInPoly(u, v, s.poly)) return o; } return null; }
 
 /* ---------- persistence ---------- */
 const objKey = () => 'miv-objects:' + S.name + ':' + S.size;
@@ -3548,17 +3563,23 @@ function buildObjPane(keep) {
       h('div', { class: 'row' }, h('span', { style: 'display:inline-block;width:12px;height:12px;background:' + o.color }), h('b', { class: 'accc' }, o.code), h('span', { class: 'dim', title: o.id }, o.id.slice(0, 8) + '…'), h('span', { style: 'margin-left:auto' }),
         h('button', { title: 'Track forward from the playhead', disabled: !!OBJ.job, onclick: () => trackObject(o, 1) }, 'Track ▶'),
         h('button', { title: 'Track backward from the playhead', disabled: !!OBJ.job, onclick: () => trackObject(o, -1) }, '◀ Track'),
-        h('button', { title: 'Redraw at the current frame (analyst keyframe)', onclick: () => startTag(o.id) }, 'Redraw'),
-        h('button', { onclick: () => { OBJ.confirmDel = o.id; buildObjPane(); } }, '×')),
+        h('button', { title: 'Delete this object and its whole track', style: 'border-color:var(--bad);color:var(--bad)', onclick: () => { OBJ.confirmDel = o.id; buildObjPane(); } }, '🗑 Delete…')),
+      h('div', { class: 'btns' }, h('button', { title: 'Pause on a frame showing this object, then draw a new outline for it (a keyframe). The tracker re-learns the object from it and continues from there.', style: 'border-color:var(--acc);color:var(--acc)', onclick: () => { OBJ.sel = o.id; startTag(o.id); } }, OBJ.redraw === o.id ? 'Drawing on the video… (Esc cancels)' : '＋ Add outline at this frame')),
       h('div', { class: 'grid2' },
         h('label', null, 'Label'), h('input', { type: 'text', value: o.label, placeholder: 'e.g. white ute', oninput: e => { o.label = e.target.value; objectsChanged(); } }),
         h('label', null, 'Class'), h('input', { type: 'text', value: o.cls, list: 'objClasses', placeholder: 'vehicle, person, vessel…', oninput: e => { o.cls = e.target.value; objectsChanged(); } })),
       h('textarea', { placeholder: 'description', oninput: e => { o.desc = e.target.value; objectsChanged(); } }, o.desc || ''),
       h('div', { class: 'muted' }, (span ? tcOf(span[0]) + ' → ' + tcOf(span[1]) : '') + ' · ' + o.samples.length + ' samples (' + an + ' analyst)' + (o.status ? ' · ' + o.status : '')),
+      h('details', { open: sel }, h('summary', { class: 'dim' }, 'Analyst outlines (keyframes): ' + an),
+        h('table', null, o.samples.filter(x => x.src === 'analyst').map(k => h('tr', null,
+          h('td', { class: 'k', style: 'cursor:pointer', onclick: () => { P.pause(); seek(k.t); } }, tcOf(k.t)),
+          h('td', null, h('button', { onclick: () => { P.pause(); seek(k.t); } }, 'Go')),
+          h('td', null, h('button', { title: an > 1 ? 'Remove this outline and the tracking derived from it (up to the next outline)' : 'This is the only outline — delete the object instead', disabled: an <= 1, onclick: () => removeKeyframe(o, k) }, 'Remove')))))),
       st ? h('div', { class: 'dim' }, 'path ' + (st.dist >= 1000 ? (st.dist / 1000).toFixed(2) + ' km' : st.dist.toFixed(0) + ' m') + ' · mean ' + fmtS(st.mean) + ' · max ' + fmtS(st.max) + (isNum(st.hdg) ? ' · heading ' + st.hdg.toFixed(0) + '°T' : '') + ' · ' + st.stops.length + ' stop(s)') : null,
       h('div', { class: 'btns' }, h('button', { onclick: () => { if (span) { P.pause(); seek(span[0]); } } }, 'Go to start'), h('button', { onclick: () => { if (span) { S.inT = span[0]; S.outT = span[1]; buildExportPane(); dirty(); } } }, 'Set clip'), h('button', { onclick: () => exportObjects('geojson', [o]) }, 'GeoJSON'), h('button', { onclick: () => exportObjects('kml', [o]) }, 'KML')),
-      OBJ.confirmDel === o.id ? h('div', { class: 'note badc', style: 'border:1px solid var(--bad);padding:6px' }, 'Delete ' + o.code + (o.label ? ' (' + o.label + ')' : '') + ' and its ' + o.samples.length + ' track samples? This cannot be undone.', h('div', { class: 'btns' }, h('button', { style: 'border-color:var(--bad);color:var(--bad)', onclick: () => { OBJ.list = OBJ.list.filter(x => x !== o); OBJ.confirmDel = null; objectsChanged(); buildObjPane(); } }, 'Delete'), h('button', { onclick: () => { OBJ.confirmDel = null; buildObjPane(); } }, 'Cancel'))) : null));
+      OBJ.confirmDel === o.id ? h('div', { class: 'note badc', style: 'border:1px solid var(--bad);padding:6px' }, 'Delete ' + o.code + (o.label ? ' (' + o.label + ')' : '') + ' and its ' + o.samples.length + ' track samples? This cannot be undone.', h('div', { class: 'btns' }, h('button', { style: 'border-color:var(--bad);color:var(--bad)', onclick: () => deleteObject(o) }, 'Delete'), h('button', { onclick: () => { OBJ.confirmDel = null; buildObjPane(); } }, 'Cancel'))) : null));
   }
+  if (OBJ.confirmDel) setTimeout(() => { const e = p.querySelector('.note.badc'); if (e) e.scrollIntoView({ block: 'center' }); });
   // movement patterns
   const ev = [];
   for (const o of OBJ.list) { const st = objStats(o); if (st) st.stops.forEach(s => ev.push({ t: s.t0, txt: o.code + ' stopped ' + (s.t1 - s.t0).toFixed(0) + ' s', o })); }
