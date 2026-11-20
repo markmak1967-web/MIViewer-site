@@ -217,7 +217,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.12.0', build: 19 };
+const BUILD = { ver: 'R0.12.1', build: 20 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -477,11 +477,39 @@ function parseSPS(nal) {
   return { profile, compat, level, width: wmb * 16 - (cl + cr) * cx, height: (2 - fmo) * hmu * 16 - (ct + cb) * cy };
 }
 
+/* Timestamp jitter: some encoders stamp single frames, or runs of a few, up to a fraction of a second early or late and
+   then snap back (the stream order is right, the stamps are not). Durations taken from such stamps add a permanent offset
+   per glitch, so the played timeline drifts away from the metadata. With no frame reordering (pts = dts), each frame's
+   offset from an ideal constant rate is median-filtered over ±15 frames: excursions are removed, real steps (dropped
+   frames) are kept. Stamps within half a frame of the filtered track are left exactly as recorded. */
+function regularizeTimes(S0, noReorder) {
+  const N = S0.length; if (N < 40) return 0;
+  // frame reordering (B-frames) shows as pts > dts on most frames; a stream where nearly all frames have pts = dts has
+  // none, and its few disagreeing stamps are more of the same jitter (some even have pts < dts, which no encoder means)
+  if (noReorder === false) return 0;
+  if (noReorder !== true) { const same = S0.filter(s => s.pts === s.dts).length; if (same < 0.95 * N) return 0; }
+  const d = []; for (let i = 1; i < N; i++) { const x = S0[i].pts - S0[i - 1].pts; if (x > 0) d.push(x); }
+  const med = median(d); if (!(med > 0)) return 0;
+  const o = S0.map((s, i) => s.pts - i * med), R = 15, os = new Float64Array(N), win = [];
+  for (let i = 0; i < N; i++) {
+    const a = Math.max(0, i - R), b = Math.min(N - 1, i + R); win.length = 0; for (let k = a; k <= b; k++) win.push(o[k]);
+    win.sort((x, y) => x - y); os[i] = win[win.length >> 1];
+  }
+  let prev = -Infinity, fixed = 0;
+  for (let i = 0; i < N; i++) {
+    const c = i * med + os[i]; let q = Math.abs(S0[i].pts - c) <= 0.5 * med ? S0[i].pts : Math.round(c);
+    if (q < prev + 0.5 * med) q = Math.round(prev + med);
+    if (q !== S0[i].pts) { fixed++; S0[i].pts0 = S0[i].pts; }
+    S0[i].pts = S0[i].dts = q; prev = q;
+  }
+  return fixed;
+}
 /* Build video samples from TS PES list */
 function buildVideoFromTS(stream, pes) {
   const v = { codec: stream.codec, st: stream.st, timescale: 90000, samples: [], playable: false, sps: null, pps: null, width: 0, height: 0 };
   const isAVC = stream.st === 0x1B, isHEVC = stream.st === 0x24;
-  let lastPts = null;
+  let lastPts = null, curSps = null, curPps = null; v.psChanges = 0;
+  const same = (a, b) => a && b && a.length === b.length && a.every((x, i) => x === b[i]);
   for (const p of pes) {
     let pts = p.pts, dts = p.dts !== null ? p.dts : p.pts;
     if (pts === null) { if (lastPts === null) continue; pts = dts = lastPts + 3003; }
@@ -492,9 +520,12 @@ function buildVideoFromTS(stream, pes) {
       for (const nal of nals) {
         const t = nal[0] & 0x1F;
         if (t === 5) key = true;
-        if (t === 7) { if (!v.sps) v.sps = nal.slice(); continue; }
-        if (t === 8) { if (!v.pps) v.pps = nal.slice(); continue; }
+        // parameter sets stay in the stream as well as in the sample entry: many encoders send a new PPS (e.g. a new
+        // initial QP) every GOP under the same id, and decoding later GOPs with the first one corrupts every picture
+        if (t === 7) { if (!v.sps) v.sps = nal.slice(); if (curSps && !same(nal, curSps)) v.psChanges++; curSps = nal; }
+        if (t === 8) { if (!v.pps) v.pps = nal.slice(); if (curPps && !same(nal, curPps)) v.psChanges++; curPps = nal; }
         if (t === 9 || t === 12) continue;
+        if ((t === 1 || t === 5) && !p._st) { try { const r = new BitR(unescapeRBSP(nal.subarray(1, 16))); r.ue(); const st = r.ue() % 5; p._st = 1; if (st === 1) v.bSlices = (v.bSlices || 0) + 1; } catch (e) { } }
         keep.push(nal); tot += 4 + nal.length;
       }
       if (!keep.length) continue;
@@ -505,6 +536,7 @@ function buildVideoFromTS(stream, pes) {
     } else key = true;
     v.samples.push({ pts, dts, key, data, size: data ? data.length : p.data.length, off: p.off });
   }
+  v.retimed = regularizeTimes(v.samples, isAVC ? !v.bSlices : undefined); // no B slices: no reordering
   if (isAVC && v.sps && v.pps) {
     try { const s = parseSPS(v.sps); Object.assign(v, { width: s.width, height: s.height, profile: s.profile, level: s.level }); v.playable = true; } catch (e) { console.warn('SPS', e); }
     if (!v.samples.some(s => s.key) && v.samples.length) v.samples[0].key = true;
@@ -1512,6 +1544,8 @@ async function extractTS(buf, opt = {}) {
   if (vs) {
     const v = buildVideoFromTS(vs, ts.pesList.get(vs.pid) || []);
     R.video = v;
+    if (v.retimed) W.push(v.retimed + ' video timestamps out of sequence (encoder jitter) were regularised for playback; frame order is as recorded');
+    if (v.psChanges) W.push('video parameter sets change ' + v.psChanges + ' times in the stream (kept in the stream for decoding)');
     if (v.samples.length) {
       R.minPts = v.samples.reduce((m, s) => Math.min(m, s.pts), Infinity);
       R.frames = v.samples.map(s => (s.pts - R.minPts) / 90000).sort((a, b) => a - b);
@@ -1618,7 +1652,8 @@ function finishLoad() {
     bar.classList.add('show');
   } else bar.classList.remove('show');
   // video
-  if (S.playable && S.vidUrl) { vid.src = S.vidUrl; $('#vidMsg').textContent = ''; }
+  S.damage = []; if (typeof VCK !== 'undefined') VCK.job = null;
+  if (S.playable && S.vidUrl) { vid.src = S.vidUrl; $('#vidMsg').textContent = ''; if (typeof videoCheck === 'function') setTimeout(() => videoCheck(), 800); }
   else $('#vidMsg').textContent = S.video ? 'Video codec ' + S.video.codec + ' not playable in browser — metadata timeline active' : (S.klv.length ? 'Metadata only — timeline driven by KLV' : 'No video');
   rebuildTrack();
   DEM.reset(); preloadDEM();
@@ -1737,6 +1772,7 @@ vid.addEventListener('ended', () => P.pause());
 vid.addEventListener('loadedmetadata', () => { if (S.video && !S.video.width) { CFG.imgW = vid.videoWidth; CFG.imgH = vid.videoHeight; } dirty(); });
 vid.addEventListener('seeked', dirty);
 vid.addEventListener('error', () => {
+  if (vid.error && vid.error.code === 3 && typeof vckOnError === 'function' && vckOnError()) { status('Damaged video frame — left out of playback, continuing'); return; }
   const m = vid.error && vid.error.message || 'unknown';
   const sandboxed = /URL safety|not allowed|SecurityError/i.test(m) || (window.self !== window.top);
   warn('Browser could not decode the video (' + m + ')' + (sandboxed ? ' — this page is running inside a sandboxed preview, which blocks local (blob:) video. Save the HTML file and open it directly in Chrome or Edge.' : ''));
@@ -1957,6 +1993,90 @@ function updateHud(t) {
   updateLegend();
 }
 
+
+/* =====================================================================
+   VIDEO FRAME CHECK — damaged frames in recorded FMV
+   Recorded downlink video often carries frames the browser's decoder rejects outright (lost or corrupted slices).
+   FFmpeg conceals them; Chrome's player stops at the first one. After a TS file is loaded, every GOP is decoded once
+   in the background with the browser's own decoder (WebCodecs). Where a GOP fails, the frames from the first
+   undecodable one to the next keyframe are left out of the playback copy; the previous good picture is held over the
+   gap, so the timeline, frame list and metadata stay as recorded. The repaired copy is swapped in without interrupting
+   the viewer. Exports of the original stream are untouched. A decode error met during playback before the check has
+   finished repairs that GOP straight away.
+   ===================================================================== */
+const VCK = { job: null, wantPlay: false };
+// play intent survives a decode error (the element stops on its own; the viewer did not pause it)
+vid.addEventListener('playing', () => { VCK.wantPlay = true; });
+vid.addEventListener('pause', () => { if (!vid.error) VCK.wantPlay = false; });
+function vckGops(v) { const g = []; v.samples.forEach((s, i) => { if (s.key || !g.length) g.push([]); g[g.length - 1].push(i); }); return g; }
+function vckConfig(v) {
+  const sps = v.sps, pps = v.pps; if (!sps || !pps) return null;
+  const desc = new Uint8Array([1, sps[1], sps[2], sps[3], 0xFF, 0xE1, sps.length >> 8, sps.length & 255, ...sps, 1, pps.length >> 8, pps.length & 255, ...pps]);
+  return { codec: 'avc1.' + [sps[1], sps[2], sps[3]].map(x => x.toString(16).padStart(2, '0')).join(''), description: desc, codedWidth: v.width, codedHeight: v.height };
+}
+async function vckRun(v, cfg, idx) {
+  let err = null; const dec = new VideoDecoder({ output: f => f.close(), error: e => { err = e; } });
+  try { dec.configure(cfg); } catch (e) { return e; }
+  for (const i of idx) { if (dec.state === 'closed') break; try { dec.decode(new EncodedVideoChunk({ type: i === idx[0] ? 'key' : 'delta', timestamp: i, data: v.samples[i].data })); } catch (e) { err = err || e; break; } }
+  try { await dec.flush(); } catch (e) { err = err || e; }
+  try { dec.close(); } catch (e) { }
+  return err;
+}
+async function videoCheck() {
+  const v = S.video; if (!v || !v.playable || S.kind !== 'ts' || !('VideoDecoder' in window)) return;
+  const cfg = vckConfig(v); if (!cfg) return;
+  try { const s = await VideoDecoder.isConfigSupported(cfg); if (!s.supported) return; } catch (e) { return; }
+  const job = VCK.job = { v, p: 0, bad: [], drop: new Set(), done: false, t0: performance.now() };
+  const gops = vckGops(v);
+  for (let k = 0; k < gops.length; k++) {
+    if (VCK.job !== job || S.video !== v) return; // another file was opened
+    const g = gops[k];
+    if (g.some(i => job.drop.has(i))) continue; // already repaired during playback
+    if (await vckRun(v, cfg, g)) {
+      let lo = 1, hi = g.length; while (lo < hi) { const m = (lo + hi) >> 1; if (await vckRun(v, cfg, g.slice(0, m))) hi = m; else lo = m + 1; }
+      const first = lo - 1; for (let j = first; j < g.length; j++) job.drop.add(g[j]);
+      job.bad.push({ i0: g[first], i1: g[g.length - 1] });
+    }
+    job.p = (k + 1) / gops.length;
+    if (k % 25 === 0) { buildFilePane(); await new Promise(r => setTimeout(r)); }
+  }
+  job.done = true; job.secs = (performance.now() - job.t0) / 1000;
+  if (job.drop.size) vckSwap(job);
+  else buildFilePane();
+}
+/* rebuild the playback copy without the dropped frames and swap it in, keeping position and play state */
+function vckSwap(job) {
+  const v = job.v, keep = v.samples.filter((s, i) => !job.drop.has(i));
+  if (!keep.length || !keep[0].key) return;
+  const blob = writeMP4({ timescale: 90000, entry: avc1Entry(v.sps, v.pps, v.width, v.height), width: v.width, height: v.height, samples: keep }, []);
+  const old = S.vidUrl, t = vid.currentTime || 0, playing = vid.error ? VCK.wantPlay : (!vid.paused && !vid.ended), rate = vid.playbackRate;
+  S.vidUrl = URL.createObjectURL(blob); S.playable = true;
+  vid.addEventListener('loadedmetadata', () => { try { vid.currentTime = t; } catch (e) { } vid.playbackRate = rate; if (playing) vid.play().catch(() => { }); }, { once: true });
+  vid.src = S.vidUrl; $('#vidMsg').textContent = '';
+  setTimeout(() => old && URL.revokeObjectURL(old), 5000);
+  // damaged spans in media time, for the timeline
+  S.damage = mergeSpans(job.bad.map(b => [(v.samples[b.i0].pts - S.minPts) / 90000, (v.samples[b.i1].pts - S.minPts) / 90000 + frameDt()]));
+  const n = job.drop.size, secs = S.damage.reduce((a, d) => a + d[1] - d[0], 0);
+  S.warnings = S.warnings.filter(w => !/damaged video frames/.test(w));
+  S.warnings.push(n + ' damaged video frames in ' + S.damage.length + ' places (' + secs.toFixed(1) + ' s) could not be decoded by this browser; the last good picture is held over them (marked on the timeline). The original stream and its exports are unchanged.');
+  thumbsReset(); buildFilePane(); dirty();
+}
+function mergeSpans(a) { a.sort((x, y) => x[0] - y[0]); const o = []; for (const s of a) { if (o.length && s[0] <= o[o.length - 1][1] + 1e-3) o[o.length - 1][1] = Math.max(o[o.length - 1][1], s[1]); else o.push(s.slice()); } return o; }
+/* decode error during playback: repair the GOP at the current position at once (the background check may not have got there) */
+function vckOnError() {
+  const v = S.video; if (!v || S.kind !== 'ts' || !v.playable || !('VideoDecoder' in window)) return false;
+  const job = VCK.job && VCK.job.v === v ? VCK.job : (VCK.job = { v, p: 0, bad: [], drop: new Set(), done: false, t0: performance.now() });
+  const t = vid.currentTime || 0, pts = S.minPts + t * 90000;
+  let i = 0; while (i + 1 < v.samples.length && v.samples[i + 1].pts <= pts + 1) i++;
+  // the failing packet is at or just after the current position: drop from there to the next keyframe
+  let k = i; while (k + 1 < v.samples.length && !v.samples[k + 1].key) k++;
+  let added = 0; for (let j = i; j <= k; j++) if (!job.drop.has(j)) { job.drop.add(j); added++; }
+  if (!added) { let n = k + 1; if (n >= v.samples.length) return false; let e = n; while (e + 1 < v.samples.length && !v.samples[e + 1].key) e++; for (let j = n; j <= e; j++) job.drop.add(j); job.bad.push({ i0: n, i1: e }); }
+  else job.bad.push({ i0: i, i1: k });
+  job.errFix = (job.errFix || 0) + 1; if (job.errFix > 200) return false;
+  vckSwap(job);
+  return true;
+}
 
 /* =====================================================================
    DRONE TELEMETRY ADAPTERS — formats that carry camera pointing + FOV
@@ -2446,6 +2566,8 @@ function drawTimeline() {
   } else { tg.fillStyle = '#15181b'; tg.fillRect(L, LANE.film[0], R - L, fh); tg.fillStyle = '#56606a'; tg.fillText(S.playable ? 'thumbnails unavailable' : 'no decodable video — metadata timeline', L + 6, LANE.film[0] + fh / 2 + 3); }
   if (S.video) { tg.fillStyle = 'rgba(240,160,48,.85)'; const ts = S.video.timescale; for (const s of S.video.samples) if (s.key) { const t = (s.pts - S.minPts) / ts; if (inView(t)) tg.fillRect(tlX(t), LANE.film[1] - 3, 1, 3); } }
   lbl('VIDEO', LANE.film[0] + 22);
+  // damaged video (frames this browser cannot decode; the last good picture is held)
+  for (const d of S.damage || []) { if (d[1] < v0 || d[0] > v1) continue; const x0 = tlX(d[0]), x1 = Math.max(x0 + 2, tlX(d[1])); tg.fillStyle = 'rgba(224,108,92,.55)'; tg.fillRect(x0, LANE.film[0], x1 - x0, LANE.film[1] - LANE.film[0]); tg.fillStyle = '#e06c5c'; tg.fillRect(x0, LANE.film[1] - 3, x1 - x0, 3); }
   // metadata health lane
   lbl('META', LANE.klv[1]);
   tg.fillStyle = '#1b1f23'; tg.fillRect(L, LANE.klv[0], R - L, LANE.klv[1] - LANE.klv[0]);
@@ -5168,6 +5290,7 @@ async function mosBuild() {
       return rs && rs.n >= 12 ? rs.inl.map(e => [(e.p[0] + 0.5) / Wd * 2 - 1, (e.p[1] + 0.5) / Hd * 2 - 1, (e.q[0] + 0.5) / Wd * 2 - 1, (e.q[1] + 0.5) / Hd * 2 - 1]) : [];
     };
     const addSample = async (t) => {
+      if ((S.damage || []).some(d => t >= d[0] - 0.02 && t <= d[1] + 0.02)) { skipped++; return false; } // held-over picture, not a real frame
       const st0 = S.track.at(t), Pj = st0 && makeProjector(st0);
       if (!Pj) { skipped++; return false; }
       // camera state the orientation solve starts from (analyst calibration folded in when it is a camera correction)
@@ -5635,6 +5758,7 @@ function buildFilePane() {
     ['Codec', v.codec + (v.profile ? ' (profile ' + v.profile + ', level ' + (v.level / 10) + ')' : '')], ['Size', (v.width || '?') + ' × ' + (v.height || '?')],
     ['Frames', S.frames.length + ' @ ' + fx(S.fps, 3) + ' fps'], ['Key frames', v.samples.filter(s => s.key).length],
     ['Playback', S.playable ? (S.kind === 'ts' ? 'remuxed in-browser to MP4' : 'native') : h('span', { class: 'badc' }, 'not playable')],
+    ...(S.kind === 'ts' && S.playable && typeof VCK !== 'undefined' && VCK.job && VCK.job.v === S.video ? [['Frame check', VCK.job.done ? (VCK.job.drop.size ? h('span', { class: 'pa' }, VCK.job.drop.size + ' damaged frames in ' + (S.damage || []).length + ' places held over (checked with this browser\'s decoder in ' + VCK.job.secs.toFixed(0) + ' s)') : 'all frames decode in this browser (' + VCK.job.secs.toFixed(0) + ' s)') : (VCK.job.drop.size ? h('span', { class: 'pa' }, 'checking… ' + Math.round(VCK.job.p * 100) + '% — ' + VCK.job.drop.size + ' damaged frames repaired so far') : 'checking every frame with this browser\'s decoder… ' + Math.round(VCK.job.p * 100) + '%')]] : []),
   ]));
   const dr = isDroneSource(), withPose = S.track ? S.track.recs.filter(r => hasPose(r.g)).length : 0;
   p.append(h('h3', null, 'Metadata'), kv([
