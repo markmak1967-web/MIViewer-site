@@ -217,7 +217,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.11.0', build: 18 };
+const BUILD = { ver: 'R0.12.0', build: 19 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -4736,7 +4736,7 @@ function buildSfmPane() {
    Output: map overlay, GeoTIFF (UTM, RGBA), PNG + world file + .prj, frame footprints.
    ===================================================================== */
 const MOS = { job: null, res: null };
-Object.assign(CFG, { mosMove: 0.1, mosGap: 2, mosStep: 2, mosReg: true, mosSigma: 15, mosBlend: 'soft', mosGsdK: 1, mosMax: 3072, mosHud: true, mosMesh: 16, mosMap: true, mosAlpha: 1, mosMovers: true, mosCam: true, mosSigA: 1, mosSigF: 0.5, mosRef: true, mosRefSig: 1, mosRefPos: false });
+Object.assign(CFG, { mosMove: 0.1, mosGap: 2, mosStep: 2, mosReg: true, mosSigma: 15, mosBlend: 'soft', mosGsdK: 1, mosMax: 3072, mosHud: true, mosMesh: 16, mosMap: true, mosAlpha: 1, mosMovers: true, mosCam: true, mosSigA: 1, mosSigF: 0.5, mosRef: true, mosRefSig: 1, mosRefPos: false, mosJpegQ: 0.88 });
 
 /* ---------- UTM (Krüger series, WGS84; sub-millimetre within the zone) ---------- */
 const UTM = (() => {
@@ -5137,7 +5137,7 @@ async function mosBuild() {
   if (S.tier && S.tier.eff !== 'A' && S.tier.eff !== 'B') { status('Mosaic needs camera pointing or encoder corners (tier A or B)', 'badc'); return; }
   P.pause();
   const [t0, t1] = mosRange(), T0 = performance.now();
-  const job = MOS.job = { cancel: false, stage: 'masking overlay', p: 0 };
+  MOS.saved = null; const job = MOS.job = { cancel: false, stage: 'masking overlay', p: 0 };
   buildMosPane();
   const tick = async () => { buildMosPane(); await new Promise(r => setTimeout(r)); };
   try {
@@ -5375,7 +5375,7 @@ async function mosBuild() {
     const frames = samples.map((s, k) => {
       const ring = [], Nn = s.N, M = s.M, cnk = cn[k], push = id => { const X = cnk[id]; if (X) { const [la, lo] = UTM.inv(X[0], X[1], zone, south); ring.push([lo, la]); } };
       for (let i = 0; i <= Nn; i++) push(i); for (let j = 1; j <= M; j++) push(j * (Nn + 1) + Nn); for (let i = Nn - 1; i >= 0; i--) push(M * (Nn + 1) + i); for (let j = M - 1; j >= 1; j--) push(j * (Nn + 1));
-      const p = corr[k]; return { t: s.t, ring, gsd: s.gsd, matches: s.pairs.length, shift: Math.hypot(p[2], p[3]), scale: p[0] / s.L * 100, rot: Math.atan2(p[1], s.L + p[0]) * R2D };
+      const p = corr[k]; return { cam: s.p ? { az: +s.p[0].toFixed(4), el: +s.p[1].toFixed(4), roll: +s.p[2].toFixed(4), focal_pct: +(s.p[3] * 100).toFixed(3) } : null, t: s.t, ring, gsd: s.gsd, matches: s.pairs.length, shift: Math.hypot(p[2], p[3]), scale: p[0] / s.L * 100, rot: Math.atan2(p[1], s.L + p[0]) * R2D };
     });
     MOS.res = { cv, dcv, zone, south, E0, N0, g: gOut, Wo, Ho, t0, t1, frames, K, pairsOK, nObs: obs.length, before, after, reg: mode !== 'none', mode, cam: camRes && { refInfo: camRes.refInfo, surf: camRes.surf, rect: camRes.rect, G: camRes.G, k1: camRes.k1, before: camRes.before, after: camRes.after, rot: camRes.rot, fov: camRes.fov, ties: camRes.n, links: camRes.links }, limited, cover: cov * gOut * gOut, shiftMed: shifts[shifts.length >> 1], shiftMax: shifts[shifts.length - 1], hud: !!ovl, skipped, blend: CFG.mosBlend, Wf: samples[0].W, Hf: samples[0].H, secs: (performance.now() - T0) / 1000 };
     MOS.job = null; buildMosPane(); dirty();
@@ -5403,6 +5403,112 @@ function mosFit() {
   MapV.fit([Math.min(ll[0][0], ll[1][0]), Math.min(ll[0][1], ll[1][1]), Math.max(ll[0][0], ll[1][0]), Math.max(ll[0][1], ll[1][1])]);
 }
 
+
+/* ---------- Cloud Optimised GeoTIFF: JPEG (YCbCr) tiles, internal overviews, internal 1-bit masks ----------
+   Layout as GDAL's COG driver: all IFDs first (full resolution, its mask, then each overview and its mask), then tile
+   data from the smallest overview up. Empty tiles are left sparse (offset 0). Lineage goes in GDAL_METADATA and
+   ImageDescription. Deflate for the masks comes from the browser's CompressionStream (zlib, as TIFF expects). */
+async function cogWrite(cv, geo, desc, meta, onp) {
+  const TS = 256, levels = [];
+  let w = cv.width, h = cv.height, src = cv;
+  for (;;) { levels.push({ w, h, src }); if (Math.max(w, h) <= TS) break; const c2 = document.createElement('canvas'); c2.width = Math.max(1, Math.ceil(w / 2)); c2.height = Math.max(1, Math.ceil(h / 2)); const x2 = c2.getContext('2d'); x2.imageSmoothingQuality = 'high'; x2.drawImage(src, 0, 0, c2.width, c2.height); src = c2; w = c2.width; h = c2.height; }
+  const tc = document.createElement('canvas'); tc.width = tc.height = TS; const tx = tc.getContext('2d', { willReadFrequently: true });
+  const jpeg = () => new Promise(r => tc.toBlob(b => b.arrayBuffer().then(a => r(new Uint8Array(a))), 'image/jpeg', CFG.mosJpegQ));
+  const deflate = async u8 => new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
+  let sub = [2, 2], nT = 0; const total = levels.reduce((a, L) => a + Math.ceil(L.w / TS) * Math.ceil(L.h / TS), 0);
+  for (const L of levels) {
+    const nx = Math.ceil(L.w / TS), ny = Math.ceil(L.h / TS); L.img = []; L.msk = [];
+    for (let ty = 0; ty < ny; ty++) for (let tx0 = 0; tx0 < nx; tx0++) {
+      tx.clearRect(0, 0, TS, TS); tx.drawImage(L.src, tx0 * TS, ty * TS, TS, TS, 0, 0, TS, TS);
+      const a = tx.getImageData(0, 0, TS, TS).data, bits = new Uint8Array(TS / 8 * TS); let any = 0, full = 1;
+      for (let y = 0; y < TS; y++) for (let x = 0; x < TS; x++) { const on = a[(y * TS + x) * 4 + 3] > 127 && tx0 * TS + x < L.w && ty * TS + y < L.h; if (on) { bits[y * 32 + (x >> 3)] |= 0x80 >> (x & 7); any = 1; } else full = 0; }
+      if (!any) { L.img.push(null); L.msk.push(null); }
+      else {
+        // black behind the transparent pixels before encoding, so the JPEG carries no stray colour under the mask
+        tx.globalCompositeOperation = 'destination-over'; tx.fillStyle = '#000'; tx.fillRect(0, 0, TS, TS); tx.globalCompositeOperation = 'source-over';
+        const j = await jpeg(); L.img.push(j); L.msk.push(await deflate(bits));
+        if (L === levels[0] && L.img.filter(Boolean).length === 1) { for (let i = 2; i < j.length - 10; i++) if (j[i] === 0xFF && (j[i + 1] === 0xC0 || j[i + 1] === 0xC2)) { const hv = j[i + 11]; sub = [hv >> 4, hv & 15]; break; } }
+      }
+      if (onp && ++nT % 8 === 0) await onp(nT / total);
+    }
+  }
+  const xml = '<GDALMetadata>' + Object.entries(meta).map(([k, v]) => '<Item name="' + k + '">' + String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</Item>').join('') + '</GDALMetadata>';
+  const asc = t => { const a = Array.from(t).map(c => { const k = c.charCodeAt(0); return k < 128 ? k : 63; }); a.push(0); return a; };
+  const IFDS = [];
+  levels.forEach((L, li) => {
+    const n = L.img.length, base = [[256, 4, [L.w]], [257, 4, [L.h]]];
+    const img = [[254, 4, [li ? 1 : 0]], ...base, [258, 3, [8, 8, 8]], [259, 3, [7]], [262, 3, [6]]];
+    if (!li) img.push([270, 2, asc(desc)]);
+    img.push([277, 3, [3]], [284, 3, [1]], [322, 3, [TS]], [323, 3, [TS]], [324, 4, new Array(n).fill(0)], [325, 4, L.img.map(b => b ? b.length : 0)], [530, 3, sub], [532, 5, [0, 1, 255, 1, 128, 1, 255, 1, 128, 1, 255, 1]]);
+    if (!li) img.push([33550, 12, [geo.g, geo.g, 0]], [33922, 12, [0, 0, 0, geo.E0, geo.N0, 0]], [34735, 3, [1, 1, 0, 4, 1024, 0, 1, 1, 1025, 0, 1, 1, 3072, 0, 1, geo.epsg, 3076, 0, 1, 9001]], [42112, 2, asc(xml)]);
+    IFDS.push({ tags: img, data: L.img });
+    const msk = [[254, 4, [li ? 5 : 4]], ...base, [258, 3, [1]], [259, 3, [8]], [262, 3, [4]], [277, 3, [1]], [284, 3, [1]], [322, 3, [TS]], [323, 3, [TS]], [324, 4, new Array(n).fill(0)], [325, 4, L.msk.map(b => b ? b.length : 0)]];
+    IFDS.push({ tags: msk, data: L.msk });
+  });
+  const sz = { 2: 1, 3: 2, 4: 4, 5: 8, 12: 8 }, cnt = (t, v) => t === 5 ? v.length / 2 : v.length;
+  let off = 8;
+  for (const I of IFDS) { I.off = off; off += 2 + I.tags.length * 12 + 4; for (const t of I.tags) { const n = t[2].length * (t[1] === 5 ? 4 : sz[t[1]]); if (n > 4) { off = (off + 1) & ~1; t.off = off; off += n; } } off = (off + 1) & ~1; }
+  // tile data: smallest overview first, image then mask per level
+  for (let li = levels.length - 1; li >= 0; li--) for (const I of [IFDS[2 * li], IFDS[2 * li + 1]]) { const offs = I.tags.find(t => t[0] === 324)[2]; I.data.forEach((b, i) => { if (b) { offs[i] = off; off += b.length; } }); }
+  const buf = new ArrayBuffer(off), dv = new DataView(buf), u8 = new Uint8Array(buf);
+  u8[0] = 0x49; u8[1] = 0x49; dv.setUint16(2, 42, true); dv.setUint32(4, IFDS[0].off, true);
+  const put = (o, t, v) => { for (let i = 0; i < v.length; i++) { if (t === 2) dv.setUint8(o + i, v[i]); else if (t === 3) dv.setUint16(o + 2 * i, v[i], true); else if (t === 4 || t === 5) dv.setUint32(o + 4 * i, v[i], true); else dv.setFloat64(o + 8 * i, v[i], true); } };
+  IFDS.forEach((I, k) => {
+    dv.setUint16(I.off, I.tags.length, true);
+    I.tags.forEach((t, i) => { const p = I.off + 2 + 12 * i; dv.setUint16(p, t[0], true); dv.setUint16(p + 2, t[1], true); dv.setUint32(p + 4, cnt(t[1], t[2]), true); if (t.off) { dv.setUint32(p + 8, t.off, true); put(t.off, t[1], t[2]); } else put(p + 8, t[1], t[2]); });
+    dv.setUint32(I.off + 2 + 12 * I.tags.length, k + 1 < IFDS.length ? IFDS[k + 1].off : 0, true);
+  });
+  for (const I of IFDS) { const offs = I.tags.find(t => t[0] === 324)[2]; I.data.forEach((b, i) => { if (b) u8.set(b, offs[i]); }); }
+  return new Blob([buf], { type: 'image/tiff' });
+}
+function mosLineage(R) {
+  const c = R.cam, ri = c && c.refInfo && !c.refInfo.err ? c.refInfo : null;
+  return {
+    PRODUCT: 'pseudo-orthomosaic', SOURCE_VIDEO: S.name || '', TIME_RANGE: tcOf(R.t0) + ' - ' + tcOf(R.t1), FRAMES: R.K, GSD_M: R.g, CRS: 'EPSG:' + UTM.epsg(R.zone, R.south),
+    METHOD: R.mode === 'camera' ? 'frames corrected (radial distortion, principal point), rectified to nadir, matched on rectified frames, orientation solved by banded bundle adjustment' + (ri ? '; basemap used as shape reference (free shared offset)' : '') : R.mode === 'ground' ? 'per-frame ground similarity from image tie points' : 'metadata placement only',
+    GROUND_SURFACE: c && c.surf || '', SEAM_MISFIT_M: c && c.rect ? fx(c.rect[c.rect.length - 1].med, 3) + ' median, ' + fx(c.rect[c.rect.length - 1].p90, 3) + ' p90' : '',
+    CAMERA: c ? 'focal ' + fx((Math.exp(c.G[0]) - 1) * 100, 2) + '%, k1 ' + fx(c.G[1], 4) + ', k2 ' + fx(c.G[2], 4) + ', principal point ' + fx(c.G[3], 4) + ', ' + fx(c.G[4], 4) : '',
+    BASEMAP_SHAPE: ri ? ri.ref.name + ' at ' + fx(ri.ref.res, 2) + ' m; check points ' + fx(ri.check.med, 2) + ' m median, ' + fx(ri.check.p90, 2) + ' m p90 (' + ri.check.n + ')' : (c && c.refInfo && c.refInfo.err ? 'not used: ' + c.refInfo.err : 'not used'),
+    POSITION: ri && CFG.mosRefPos ? 'basemap' : 'metadata' + (CAL.list.length ? ' + analyst calibration lines' : ''),
+    METADATA_SECURITY: S.sec && S.sec.classification ? S.sec.classification + ' (as reported by the video metadata)' : '',
+    LIMITS: 'not a rigorous orthorectification: objects above the ground surface lean; absolute accuracy follows the metadata',
+    GENERATOR: 'MIViewer ' + BUILD.ver + ' build ' + BUILD.build, CREATED: new Date().toISOString(),
+  };
+}
+async function mosCOG() {
+  const R = MOS.res; if (!R) return null; if (R.cog) return R.cog;
+  const L = mosLineage(R), desc = 'MIViewer pseudo-orthomosaic of ' + L.SOURCE_VIDEO + ' ' + L.TIME_RANGE + '; ' + L.METHOD;
+  status('Writing Cloud Optimised GeoTIFF…');
+  R.cog = await cogWrite(R.cv, { g: R.g, E0: R.E0, N0: R.N0, epsg: UTM.epsg(R.zone, R.south) }, desc, L, async f => { status('Writing Cloud Optimised GeoTIFF… ' + Math.round(f * 100) + '%'); await new Promise(r => setTimeout(r)); });
+  status('Cloud Optimised GeoTIFF: ' + fx(R.cog.size / 1e6, 2) + ' MB');
+  return R.cog;
+}
+function mosName(R) { return (S.name || 'misb').replace(/\.[^.]+$/, '') + '_ortho_' + R.t0.toFixed(1) + '-' + R.t1.toFixed(1) + 's'; }
+async function mosSaveLibrary() {
+  const R = MOS.res; if (!R || !S.libItemId || !LIB.items.has(S.libItemId) || LIB.mode !== 'fs') return;
+  const it = LIB.items.get(S.libItemId), id = it.id, key = 'ortho_' + R.t0.toFixed(1) + '-' + R.t1.toFixed(1) + 's', base = id + '_' + key;
+  const cog = await mosCOG(); if (!cog) return;
+  try {
+    await fsWrite(LIB.dir, '.miviewer/orthos/' + base + '.tif', cog);
+    await fsWrite(LIB.dir, '.miviewer/orthos/' + base + '_frames.geojson', mosFramesGeoJSON(R));
+    const ll = [[R.E0, R.N0], [R.E0 + R.Wo * R.g, R.N0], [R.E0, R.N0 - R.Ho * R.g], [R.E0 + R.Wo * R.g, R.N0 - R.Ho * R.g]].map(([E, N]) => UTM.inv(E, N, R.zone, R.south));
+    const bbox = [Math.min(...ll.map(q => q[1])), Math.min(...ll.map(q => q[0])), Math.max(...ll.map(q => q[1])), Math.max(...ll.map(q => q[0]))];
+    const L = mosLineage(R);
+    it.assets[key] = { href: '../orthos/' + base + '.tif', type: 'image/tiff; application=geotiff; profile=cloud-optimized', roles: ['data', 'visual'], title: 'Pseudo-orthomosaic ' + L.TIME_RANGE, 'proj:epsg': UTM.epsg(R.zone, R.south), 'gsd': R.g, 'proj:shape': [R.Ho, R.Wo], 'proj:transform': [R.g, 0, R.E0, 0, -R.g, R.N0], 'file:size': cog.size };
+    it.assets[key + '_frames'] = { href: '../orthos/' + base + '_frames.geojson', type: 'application/geo+json', roles: ['metadata', 'lineage'], title: 'Frames used for ' + key + ', with corrections' };
+    const list = (it.properties['miv:orthos'] || []).filter(o => o.key !== key);
+    list.push({ key, file: base + '.tif', t0: R.t0, t1: R.t1, gsd: R.g, frames: R.K, bbox, created: L.CREATED, method: L.METHOD, check: L.BASEMAP_SHAPE, seam: L.SEAM_MISFIT_M });
+    it.properties['miv:orthos'] = list; it.properties.updated = new Date().toISOString();
+    await libSaveItem(it);
+    MOS.saved = '.miviewer/orthos/' + base + '.tif'; buildMosPane();
+    status('Saved to library: ' + MOS.saved);
+  } catch (e) { status('Library save failed: ' + e.message, 'badc'); console.warn(e); }
+}
+function mosFramesGeoJSON(R) {
+  const fc = { type: 'FeatureCollection', name: mosName(R) + '_frames', features: R.frames.filter(f => f.ring.length > 2).map(f => ({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...f.ring, f.ring[0]]] }, properties: { t: +f.t.toFixed(3), timecode: tcOf(f.t), gsd_m: +f.gsd.toFixed(3), matches: f.matches, corr: f.cam || null } })), lineage: mosLineage(R) };
+  return JSON.stringify(fc);
+}
+
 /* ---------- exports ---------- */
 function tiffWrite(W, H, rgba, geo, desc) {
   const rps = Math.max(1, Math.min(H, Math.floor(262144 / (W * 4)))), ns = Math.ceil(H / rps);
@@ -5427,6 +5533,7 @@ function tiffWrite(W, H, rgba, geo, desc) {
 function mosExport(kind) {
   const R = MOS.res; if (!R) return; const base = (S.name || 'misb').replace(/\.[^.]+$/, '') + '_mosaic';
   const desc = 'MIViewer pseudo-orthomosaic of ' + (S.name || '') + ' ' + tcOf(R.t0) + '-' + tcOf(R.t1) + '; ' + R.K + ' frames; GSD ' + R.g + ' m; ' + (R.reg ? 'frames registered by image matching' : 'metadata placement only') + '; not a rigorous orthorectification (no lens model or occlusion handling)';
+  if (kind === 'cog') { mosCOG().then(b => b && download(mosName(R) + '.tif', b)); return; }
   if (kind === 'tif') {
     const rgba = R.cv.getContext('2d').getImageData(0, 0, R.Wo, R.Ho).data;
     return download(base + '.tif', new Blob([tiffWrite(R.Wo, R.Ho, rgba, { g: R.g, E0: R.E0, N0: R.N0, epsg: UTM.epsg(R.zone, R.south) }, desc)], { type: 'image/tiff' }));
@@ -5441,7 +5548,7 @@ function mosExport(kind) {
   }
   if (kind === 'geojson') {
     const fc = { type: 'FeatureCollection', name: base + '_frames', description: desc, features: R.frames.filter(f => f.ring.length > 2).map(f => ({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...f.ring, f.ring[0]]] }, properties: { t: +f.t.toFixed(3), timecode: tcOf(f.t), gsd_m: +f.gsd.toFixed(3), matches: f.matches, shift_m: +f.shift.toFixed(2), scale_pct: +f.scale.toFixed(3), rot_deg: +f.rot.toFixed(3) } })) };
-    return download(base + '_frames.geojson', JSON.stringify(fc), 'application/geo+json');
+    return download(mosName(R) + '_frames.geojson', mosFramesGeoJSON(R), 'application/geo+json');
   }
 }
 
@@ -5488,10 +5595,12 @@ function buildMosPane() {
   p.append(h('table', null, rows.map(([k, v]) => h('tr', null, h('td', { class: 'k' }, k), h('td', null, v)))),
     h('label', { class: 'row', style: 'gap:6px;margin:6px 0' }, h('input', { type: 'checkbox', checked: CFG.mosMap, onchange: e => { CFG.mosMap = e.target.checked; dirty(); } }), 'Show on map', h('span', { class: 'dim' }, 'opacity'),
       h('input', { type: 'range', min: 0.1, max: 1, step: 0.05, value: CFG.mosAlpha, oninput: e => { CFG.mosAlpha = +e.target.value; dirty(); } })),
-    h('div', { class: 'btns' }, h('button', { onclick: () => mosExport('tif'), title: 'Uncompressed RGBA GeoTIFF in UTM — opens directly in ArcGIS Pro, QGIS and GDAL' }, 'GeoTIFF'),
-      h('button', { onclick: () => mosExport('png'), title: 'PNG with world file (.pgw) and projection (.prj)' }, 'PNG + world file'),
+    h('div', { class: 'btns' }, h('button', { style: 'border-color:var(--acc);color:var(--acc)', onclick: () => mosExport('cog'), title: 'Cloud Optimised GeoTIFF: JPEG tiles, overviews and a transparency mask, UTM, lineage in the metadata — small, and opens directly in ArcGIS Pro, QGIS and GDAL' }, 'Download COG'),
+      h('button', { disabled: !(S.libItemId && typeof LIB !== 'undefined' && LIB.mode === 'fs' && LIB.items.has(S.libItemId)), onclick: mosSaveLibrary, title: S.libItemId ? 'Write the COG and frame footprints into the library folder (.miviewer/orthos/) and add them to this video\'s catalogue item' : 'Open this video from a library folder to save there' }, 'Save to library'),
+      h('button', { onclick: () => mosExport('png'), title: 'Lossless PNG with world file (.pgw) and projection (.prj)' }, 'PNG + world file'),
       h('button', { onclick: () => mosExport('geojson'), title: 'Each frame\'s ground footprint with time, resolution, tie points and the correction applied' }, 'Frame footprints'),
-      h('button', { onclick: () => { MOS.res = null; buildMosPane(); dirty(); } }, 'Clear')),
+      h('button', { onclick: () => { MOS.res = null; MOS.saved = null; buildMosPane(); dirty(); } }, 'Clear')),
+    MOS.saved ? h('div', { class: 'note' }, 'Saved in the library: ' + MOS.saved) : '',
     h('div', { class: 'dim' }, 'Placement follows the metadata (and any calibration lines) on average; registration only removes the frame-to-frame disagreement. Terrain relief comes from the elevation model in use; buildings and other things above it lean as in the pseudo-ortho.'));
 }
 
