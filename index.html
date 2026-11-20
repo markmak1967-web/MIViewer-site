@@ -159,6 +159,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
         <button id="bEnd" title="End (End)">▶|</button>
         <select id="rate" title="Playback rate"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option><option>8</option></select>
         <button id="bMark" title="Bookmark at playhead (M) · previous/next bookmark: , and .">◆ Mark</button>
+        <button id="bLive" title="Track tagged objects through playback: as you play forward, each object's track is extended on the fly (first pass may hold the video while it catches up; replays use the stored track)">◉ Track on play</button>
         <button id="bTag" title="Tag an object in this frame (T): click its outline corners on the video, double-click to close; or drag a box">◇ Tag object</button>
       </div>
       <div class="row" id="clipRow">
@@ -201,7 +202,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.4.1', build: 7 };
+const BUILD = { ver: 'R0.4.2', build: 8 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -3182,7 +3183,13 @@ function finishTag(poly) {
 function drawObjectsVideo(g, W, H) {
   const toPx = uv => [(uv[0] + 1) / 2 * W, (uv[1] + 1) / 2 * H], t = P.time();
   for (const o of OBJ.list) {
-    const s = objAt(o, t); if (!s) continue;
+    const s = objAt(o, t);
+    if (!s) { // recently lost: show the last outline dashed with a prompt to redraw
+      const i = bsearchLE(o.samples, t, x => x.t), L = o.samples[i];
+      if (L && L.end && t - L.t < 2) { g.strokeStyle = o.color; g.lineWidth = 1.5; g.setLineDash([4, 4]); g.beginPath(); L.poly.forEach((p, k) => { const [x, y] = toPx(p); k ? g.lineTo(x, y) : g.moveTo(x, y); }); g.closePath(); g.stroke(); g.setLineDash([]);
+        const [cx, cy] = toPx(L.c), txt = o.code + ' LOST · Redraw'; g.font = '11px ' + getComputedStyle(document.body).fontFamily; g.fillStyle = 'rgba(0,0,0,.7)'; g.fillRect(cx - 2, cy - 22, g.measureText(txt).width + 6, 13); g.fillStyle = '#e06c5c'; g.fillText(txt, cx + 1, cy - 12); }
+      continue;
+    }
     const sel = o.id === OBJ.sel;
     g.strokeStyle = o.color; g.lineWidth = sel ? 2.5 : 1.5; g.setLineDash(s.src === 'analyst' ? [] : s.conf < 0.7 ? [3, 3] : []);
     g.beginPath(); s.poly.forEach((p, i) => { const [x, y] = toPx(p); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.closePath(); g.stroke(); g.setLineDash([]);
@@ -3268,35 +3275,35 @@ const uvToPx = (uv) => [(uv[0] + 1) / 2 * TRK.W, (uv[1] + 1) / 2 * TRK.H];
 const pxToUv = (p) => [p[0] / TRK.W * 2 - 1, p[1] / TRK.H * 2 - 1];
 const bboxPx = poly => { const P2 = poly.map(uvToPx), xs = P2.map(p => p[0]), ys = P2.map(p => p[1]); return [Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)]; };
 
-/* ---------- tracker ---------- */
-async function trackObject(o, dir) {
-  if (OBJ.job) return;
-  if (!S.playable) { status('Tracking needs decodable video', 'badc'); return; }
-  P.pause();
-  const seed = objAt(o, P.time());
-  if (!seed) { status(o.code + ' is not present at the playhead — move to a frame where it is shown, or Redraw', 'badc'); return; }
-  const v = await trkVideo(); if (!v) { status('Tracker could not open the video', 'badc'); return; }
-  const job = OBJ.job = { o, dir, cancel: false, n: 0 };
-  // bound by the next analyst keyframe in this direction; replace old tracker samples in that span
+/* ---------- tracker (stepper: used by the Track buttons and by tracking through playback) ---------- */
+async function trkStart(o, seed, dir) {
+  const v = await trkVideo(); if (!v) return null;
   const stopAt = dir > 0 ? (o.samples.find(s => s.src === 'analyst' && s.t > seed.t + 1e-3) || { t: S.dur }).t : ([...o.samples].reverse().find(s => s.src === 'analyst' && s.t < seed.t - 1e-3) || { t: 0 }).t;
-  o.samples = o.samples.filter(s => s.src === 'analyst' || (dir > 0 ? (s.t <= seed.t + 1e-6 || s.t >= stopAt - 1e-6) : (s.t >= seed.t - 1e-6 || s.t <= stopAt + 1e-6)));
-  if (seed.src === 'interp') addSample(o, { ...seed, src: 'tracker' });
-  let G = await grabRGB(seed.t + 1e-3), [bx, by, bw, bh] = bboxPx(seed.poly);
+  // replace older tracker output between the seed and the next analyst keyframe
+  o.samples = o.samples.filter(s => s.src === 'analyst' || s === seed || (dir > 0 ? (s.t <= seed.t + 1e-6 || s.t >= stopAt - 1e-6) : (s.t >= seed.t - 1e-6 || s.t <= stopAt + 1e-6)));
+  if (seed.src === 'interp') { seed = { ...seed, src: 'tracker' }; addSample(o, seed); }
+  if (seed.end) delete seed.end;
+  const G = await grabRGB(seed.t + 1e-3), [bx, by, bw, bh] = bboxPx(seed.poly);
   const f = Math.max(1, Math.max(bw, bh) / 40), TW = Math.max(8, Math.round(bw / f)), TH = Math.max(8, Math.round(bh / f));
-  const sc0 = polyC(seed.poly), mpoly = seed.poly.map(p => { const q = uvToPx([sc0[0] + (p[0] - sc0[0]) * 1.0, sc0[1] + (p[1] - sc0[1]) * 1.0]); return [(q[0] - bx) / bw * TW, (q[1] - by) / bh * TH]; });
+  const sc0 = polyC(seed.poly), mpoly = seed.poly.map(p => { const q = uvToPx(p); return [(q[0] - bx) / bw * TW, (q[1] - by) / bh * TH]; });
   let M = []; for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) if (pointInPoly(i + 0.5, j + 0.5, mpoly)) M.push(j * TW + i);
   if (M.length < 16) M = [...Array(TW * TH).keys()];
   M = Int32Array.from(M); const PT = TW * TH;
-  let T = sampleRect(G, TRK.W, TRK.H, bx, by, bw, bh, TW, TH), [tm, tsd] = stats(T, M, PT);
+  const T = sampleRect(G, TRK.W, TRK.H, bx, by, bw, bh, TW, TH); let [tm, tsd] = stats(T, M, PT);
   if (tsd < 12) { M = Int32Array.from(Array(PT).keys()); [tm, tsd] = stats(T, M, PT); } // flat interior: keep the edges and context
-  const T0 = T.slice(), [t0m, t0sd] = stats(T0, M, PT); // analyst template: anchors against update drift
-  let prev = { ...seed, poly: seed.poly.map(p => [...p]) }, vel = { gN: 0, gE: 0, u: 0, v: 0 }, lowRun = 0, why = 'end of span', suspect = [], lastGood = prev;
-  let fi = frameIndex(seed.t);
-  while (!job.cancel) {
-    fi += dir * CFG.trackStep;
-    if (fi < 0 || fi >= S.frames.length) { why = 'end of video'; break; }
-    const t = S.frames[fi];
-    if (dir > 0 ? t >= stopAt - 1e-6 : t <= stopAt + 1e-6) { why = (dir > 0 ? stopAt < S.dur : stopAt > 0) ? 'reached analyst keyframe' : (dir > 0 ? 'end of video' : 'start of video'); break; }
+  const T0 = T.slice(), [t0m, t0sd] = stats(T0, M, PT); // seed template: anchors against update drift
+  void sc0;
+  return { o, dir, seed, stopAt, f, TW, TH, M, PT, T, tm, tsd, T0, t0m, t0sd, prev: seed, vel: { gN: 0, gE: 0, u: 0, v: 0 }, lowRun: 0, suspect: [], lastGood: seed, fi: frameIndex(seed.t), n: 0, done: false, why: '' };
+}
+async function trkStep(K) {
+  const { o, dir, f, TW, TH, M, PT, T, T0, t0m, t0sd, vel } = K;
+  let { prev, tm, tsd } = K;
+  const end = why => { K.done = true; K.why = why; };
+  K.fi += dir * CFG.trackStep;
+  if (K.fi < 0 || K.fi >= S.frames.length) return end(dir > 0 ? 'end of video' : 'start of video');
+  const t = S.frames[K.fi], stopAt = K.stopAt;
+  if (dir > 0 ? t >= stopAt - 1e-6 : t <= stopAt + 1e-6) return end((dir > 0 ? stopAt < S.dur : stopAt > 0) ? 'reached analyst keyframe' : (dir > 0 ? 'end of video' : 'start of video'));
+  let G;
     const dt = t - prev.t;
     // prediction: ground-anchored via the camera model where possible, else image-space motion
     let pred = null;
@@ -3334,7 +3341,7 @@ async function trackObject(o, dir) {
         if (lb.sc > best.sc) best = { ...lb, s, A, aw, ah, ux, uy, R, hp, box: [px, py, pw, ph] };
       }
     }
-    if (!inFrame) { why = 'left the frame'; break; }
+    if (!inFrame) return end('left the frame');
     // drift correction (Matthews et al. 2004): refine with the analyst's original template near the match
     let agree = false;
     if (best.A) {
@@ -3345,9 +3352,9 @@ async function trackObject(o, dir) {
     const [px, py, pw, ph] = best.box, R = best.R;
     const dxp = (best.ox - R) * best.ux, dyp = (best.oy - R) * best.uy, ccx = px + pw / 2, ccy = py + ph / 2;
     // innovation gate: a match far from the motion prediction is suspect (stops runaway on background)
-    const innov = Math.hypot(dxp, dyp) * 960 / TRK.W, gate = job.n >= 3 && innov > CFG.trackGate * CFG.trackStep;
-    if (best.sc < CFG.trackMinScore || gate) { if (++lowRun >= 2) { suspect.forEach(st => { const i = o.samples.indexOf(st); if (i >= 0) o.samples.splice(i, 1); }); prev = lastGood; why = gate ? 'lost (jump ' + innov.toFixed(0) + ' px)' : 'lost (match ' + best.sc.toFixed(2) + ')'; break; } }
-    else lowRun = 0;
+    const innov = Math.hypot(dxp, dyp) * 960 / TRK.W, gate = K.n >= 3 && innov > CFG.trackGate * CFG.trackStep;
+    if (best.sc < CFG.trackMinScore || gate) { if (++K.lowRun >= 2) { K.suspect.forEach(st => { const i = o.samples.indexOf(st); if (i >= 0) o.samples.splice(i, 1); }); K.prev = K.lastGood; return end(gate ? 'lost (jump ' + innov.toFixed(0) + ' px)' : 'lost (match ' + best.sc.toFixed(2) + ')'); } }
+    else K.lowRun = 0;
     const poly = best.hp.map(p => { const q = uvToPx(p); return pxToUv([ccx + (q[0] - ccx) * best.s + dxp, ccy + (q[1] - ccy) * best.s + dyp]); });
     const c = polyC(poly), g = groundOf(t, c);
     // velocity (smoothed)
@@ -3355,17 +3362,77 @@ async function trackObject(o, dir) {
     if (!gate && g && prev.g && dt) { const mLat = mpdLat(g.lat), mLon = mpdLon(g.lat); vel.gN = lerp(vel.gN, (g.lat - prev.g.lat) * mLat / dt, a); vel.gE = lerp(vel.gE, (g.lon - prev.g.lon) * mLon / dt, a); }
     if (!gate && dt) { vel.u = lerp(vel.u, (c[0] - prev.c[0]) / dt, a); vel.v = lerp(vel.v, (c[1] - prev.c[1]) / dt, a); }
     const smp = { t, poly, c, g, conf: +best.sc.toFixed(3), src: 'tracker' };
-    addSample(o, smp); prev = smp;
-    if (lowRun) suspect.push(smp); else { suspect = []; lastGood = smp; }
+    addSample(o, smp); K.prev = smp; K.n++;
+    if (K.lowRun) K.suspect.push(smp); else { K.suspect = []; K.lastGood = smp; }
     // template update (slow) on confident matches
-    if (agree && best.sc > 0.75) { const NT = new Float32Array(3 * TW * TH); for (let c = 0; c < 3; c++) for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) NT[c * TW * TH + j * TW + i] = best.A[c * best.aw * best.ah + (best.oy + j) * best.aw + best.ox + i]; for (let k = 0; k < T.length; k++) T[k] = T[k] * 0.85 + NT[k] * 0.15; [tm, tsd] = stats(T, M, PT); }
-    if (++job.n % 8 === 0) { status(o.code + ' tracking ' + (dir > 0 ? '▶ ' : '◀ ') + tcAt(t) + ' · match ' + best.sc.toFixed(2) + ' · Esc stops'); seek(t); await new Promise(r => setTimeout(r)); }
+    if (agree && best.sc > 0.75) { const NT = new Float32Array(3 * TW * TH); for (let c = 0; c < 3; c++) for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) NT[c * TW * TH + j * TW + i] = best.A[c * best.aw * best.ah + (best.oy + j) * best.aw + best.ox + i]; for (let k = 0; k < T.length; k++) T[k] = T[k] * 0.85 + NT[k] * 0.15; [K.tm, K.tsd] = stats(T, M, PT); }
+  return K.prev;
+}
+function trkFinish(K, live) {
+  const o = K.o, last = K.prev;
+  if (/^lost|left the frame/.test(K.why) && last) last.end = K.why; // stops tracking-through-playback retrying here; a Redraw clears it
+  o.status = (live ? 'tracked on playback' : 'tracked ' + (K.dir > 0 ? 'forward' : 'backward')) + ' to ' + tcAt(last.t) + ': ' + K.why;
+  _objPolyCache.clear(); objectsChanged(); buildObjPane();
+}
+async function trackObject(o, dir) {
+  if (OBJ.job) return;
+  if (!S.playable) { status('Tracking needs decodable video', 'badc'); return; }
+  P.pause();
+  const seed = objAt(o, P.time());
+  if (!seed) { status(o.code + ' is not present at the playhead — move to a frame where it is shown, or Redraw', 'badc'); return; }
+  const job = OBJ.job = { o, dir, cancel: false };
+  const K = await trkStart(o, o.samples.includes(seed) ? seed : { ...seed }, dir);
+  if (!K) { OBJ.job = null; status('Tracker could not open the video', 'badc'); return; }
+  buildObjPane();
+  while (!K.done && !job.cancel) {
+    await trkStep(K);
+    if (K.n % 8 === 0) { status(o.code + ' tracking ' + (dir > 0 ? '▶ ' : '◀ ') + tcAt(K.prev.t) + ' · match ' + (K.prev.conf ?? 1) + ' · Esc stops'); seek(K.prev.t); await new Promise(r => setTimeout(r)); }
   }
-  if (job.cancel) why = 'stopped by analyst';
-  o.status = 'tracked ' + (dir > 0 ? 'forward' : 'backward') + ': ' + job.n + ' frames, ' + why;
-  OBJ.job = null; _objPolyCache.clear(); objectsChanged(); buildObjPane(); status(o.code + ' ' + o.status); seek(prev.t); dirty();
+  if (job.cancel) { K.done = true; K.why = 'stopped by analyst'; }
+  OBJ.job = null; trkFinish(K, false); status(o.code + ' ' + o.status); seek(K.prev.t); dirty();
 }
 
+/* ---------- tracking through playback ----------
+   While playing forward, any object whose track ends just ahead of the playhead is extended
+   frame by frame on a hidden decoder. If the tracker falls behind, the video holds (first pass
+   only); replays use the stored track at full speed. Stops where a run was lost until a Redraw. */
+Object.assign(CFG, { liveTrack: true });
+const LIVE = { Ks: new Map(), hold: false, saveT: 0, on: false };
+function chainEnd(o, t) {
+  const A = o.samples, gap = frameDt() * (CFG.trackStep * 3 + 1); if (!A.length) return null;
+  let i = bsearchLE(A, t + 1e-6, s => s.t); if (i < 0) return null;
+  while (i > 0 && A[i].t - A[i - 1].t <= gap) i--; // start of the run the playhead is in or after
+  while (i + 1 < A.length && A[i + 1].t - A[i].t <= gap) i++;
+  return t - A[i].t <= 30 ? A[i] : null; // catch up at most 30 s behind the playhead
+}
+function liveRelease() { if (LIVE.hold) { LIVE.hold = false; if (P.playing && S.playable) vid.play().catch(() => { }); liveBtn(); } }
+function liveBtn() { const b = $('#bLive'); if (b) { b.classList.toggle('on', CFG.liveTrack); b.textContent = (CFG.liveTrack ? '◉' : '○') + ' Track on play' + (LIVE.hold ? ' · catching up' : ''); } }
+async function livePump() {
+  let busy = false;
+  try {
+    if (CFG.liveTrack && S.playable && P.playing && !P.rev && !OBJ.job && !OBJ.drawing && OBJ.list.length) {
+      const now = P.time(), look = 0.4 * Math.max(1, P.shuttle || 1);
+      let pick = null;
+      for (const o of OBJ.list) {
+        const e = chainEnd(o, now);
+        if (e && !e.end && e.t < now + look && S.frames.length && e.t < S.frames[S.frames.length - 1] - frameDt() * CFG.trackStep && (!pick || e.t < pick.e.t)) pick = { o, e };
+      }
+      if (pick) {
+        busy = true;
+        if (pick.e.t < now - 0.08 && !LIVE.hold) { LIVE.hold = true; vid.pause(); liveBtn(); }
+        let K = LIVE.Ks.get(pick.o.id);
+        if (!K || K.done || K.prev !== pick.e) { K = await trkStart(pick.o, pick.e, 1); if (!K) throw new Error('tracker video'); LIVE.Ks.set(pick.o.id, K); }
+        const t0 = performance.now();
+        while (!K.done && performance.now() - t0 < 45 && K.prev.t < P.time() + look) await trkStep(K);
+        if (K.done) { trkFinish(K, true); LIVE.Ks.delete(pick.o.id); }
+        if (LIVE.hold) status(pick.o.code + ' tracking ahead of playback ' + tcAt(K.prev.t) + ' — first pass holds the video; replays use the stored track');
+        if (performance.now() - LIVE.saveT > 2000) { LIVE.saveT = performance.now(); objectsChanged(); }
+        _objPolyCache.clear(); dirty();
+      } else if (LIVE.hold) { liveRelease(); objectsChanged(); buildObjPane(); status('Tracking caught up'); }
+    } else if (LIVE.hold) liveRelease();
+  } catch (e) { console.warn(e); liveRelease(); }
+  setTimeout(livePump, busy ? 0 : 50);
+}
 /* ---------- movement patterns ---------- */
 function objGround(o) { return o.samples.filter(s => s.g).map(s => ({ t: s.t, lat: s.g.lat, lon: s.g.lon })); }
 function objKinematics(o) {
@@ -3468,11 +3535,12 @@ function buildObjPane(keep) {
       h('button', { onclick: () => exportObjects('geojson'), disabled: !OBJ.list.length }, 'GeoJSON'),
       h('button', { onclick: () => exportObjects('kml'), disabled: !OBJ.list.length }, 'KML'),
       h('button', { onclick: () => exportObjects('csv'), disabled: !OBJ.list.length }, 'CSV')),
-    h('div', { class: 'note' }, 'Pause on a frame, tag the object (polygon or box), name it, then Track ▶ / ◀ Track. The camera model predicts where the object re-appears; image matching finds its own movement. Redraw at any frame to correct drift — tracker runs stop at analyst keyframes.' + (S.tier && !geomOK() ? ' This file has no sensor geometry (tier ' + S.tier.eff + '), so tracks stay in image space without ground positions.' : '')),
+    h('label', { class: 'row', style: 'gap:6px;margin:6px 0' }, h('input', { type: 'checkbox', checked: CFG.liveTrack, onchange: e => { CFG.liveTrack = e.target.checked; if (!CFG.liveTrack) liveRelease(); liveBtn(); } }), h('b', null, 'Track through playback'), h('span', { class: 'dim' }, '— press play and tagged objects are followed automatically')),
+    h('div', { class: 'note' }, 'Pause on a frame, tag the object (polygon or box) and name it, then just press play: with Track through playback on, the track is extended as the video plays (the first pass may hold the video while it catches up; replays use the stored track). Track ▶ / ◀ Track run it on demand, including backwards. The camera model predicts where the object re-appears; image matching finds its own movement. Redraw at any frame to correct drift — tracker runs stop at analyst keyframes.' + (S.tier && !geomOK() ? ' This file has no sensor geometry (tier ' + S.tier.eff + '), so tracks stay in image space without ground positions.' : '')),
     h('div', { class: 'grid2' },
       h('label', null, 'Track every Nth frame'), h('select', { onchange: e => { CFG.trackStep = +e.target.value; } }, [1, 2, 3, 5].map(n => h('option', { value: n, selected: CFG.trackStep === n }, n))),
       h('label', null, 'Min match score'), h('input', { type: 'number', step: 0.05, value: CFG.trackMinScore, onchange: e => { CFG.trackMinScore = +e.target.value; } })));
-  if (!OBJ.list.length) { p.append(h('ol', { class: 'note' }, h('li', null, S.dur ? 'Video loaded.' : 'Load a video (Open… or drag it onto the page).'), h('li', null, 'Pause on a frame where the object is visible (Space, or ← → to step).'), h('li', null, 'Press ◇ Tag object (here, under the video, or the T key). The cursor becomes a crosshair over the video.'), h('li', null, 'Click around the object on the video to place the outline corners, then double-click (or press Enter) to close it. Or drag a box around it.'), h('li', null, 'Name it here, then press Track ▶ to follow it forward (◀ Track for backward).'))); return; }
+  if (!OBJ.list.length) { p.append(h('ol', { class: 'note' }, h('li', null, S.dur ? 'Video loaded.' : 'Load a video (Open… or drag it onto the page).'), h('li', null, 'Pause on a frame where the object is visible (Space, or ← → to step).'), h('li', null, 'Press ◇ Tag object (here, under the video, or the T key). The cursor becomes a crosshair over the video.'), h('li', null, 'Click around the object on the video to place the outline corners, then double-click (or press Enter) to close it. Or drag a box around it.'), h('li', null, 'Name it here, then press play — with Track through playback on, it is followed on the map as the video plays. (Track ▶ / ◀ Track run it on demand, including backwards.)'))); return; }
   for (const o of OBJ.list) {
     const st = objStats(o), an = o.samples.filter(s => s.src === 'analyst').length, sel = o.id === OBJ.sel;
     const span = o.samples.length ? [o.samples[0].t, o.samples[o.samples.length - 1].t] : null;
@@ -4094,6 +4162,8 @@ function init() {
   sp.addEventListener('pointerup', () => { sy = null; });
   installKeys();
   $('#bMark').onclick = addMark;
+  $('#bLive').onclick = () => { CFG.liveTrack = !CFG.liveTrack; if (!CFG.liveTrack) liveRelease(); liveBtn(); buildObjPane(); };
+  liveBtn(); livePump();
   $('#bTag').onclick = () => OBJ.drawing ? cancelTag() : startTag();
   // follow camera
   const origDraw = MapV.draw.bind(MapV);
