@@ -217,7 +217,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.9.0', build: 16 };
+const BUILD = { ver: 'R0.10.0', build: 17 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -4736,7 +4736,7 @@ function buildSfmPane() {
    Output: map overlay, GeoTIFF (UTM, RGBA), PNG + world file + .prj, frame footprints.
    ===================================================================== */
 const MOS = { job: null, res: null };
-Object.assign(CFG, { mosMove: 0.1, mosGap: 2, mosStep: 2, mosReg: true, mosSigma: 15, mosBlend: 'soft', mosGsdK: 1, mosMax: 3072, mosHud: true, mosMesh: 16, mosMap: true, mosAlpha: 1, mosMovers: true });
+Object.assign(CFG, { mosMove: 0.1, mosGap: 2, mosStep: 2, mosReg: true, mosSigma: 15, mosBlend: 'soft', mosGsdK: 1, mosMax: 3072, mosHud: true, mosMesh: 16, mosMap: true, mosAlpha: 1, mosMovers: true, mosCam: true, mosSigA: 1, mosSigF: 0.5 });
 
 /* ---------- UTM (Krüger series, WGS84; sub-millimetre within the zone) ---------- */
 const UTM = (() => {
@@ -4782,6 +4782,260 @@ function bandChol(n, b, A) {
   };
 }
 
+
+/* ---------- frame mesh on the ground ---------- */
+function mosNodes(s, toGround) {
+  const ll = []; let n = 0;
+  for (let j = 0; j <= s.M; j++) for (let i = 0; i <= s.N; i++) {
+    const gp = toGround(-1 + 2 * i / s.N, -1 + 2 * j / s.M);
+    if (!gp || gp.horizon || !isNum(gp.lat)) ll.push(null); else { ll.push([gp.lat, gp.lon]); n++; }
+  }
+  s.ll = ll; return n >= 4;
+}
+function mosUTM(s, zone, south) {
+  const N = s.N, M = s.M, nodes = s.ll.map(q => q && UTM.fwd(q[0], q[1], zone, south)), cg = [];
+  for (let j = 0; j < M; j++) for (let i = 0; i < N; i++) {
+    const a = nodes[j * (N + 1) + i], d = nodes[(j + 1) * (N + 1) + i + 1], b = nodes[j * (N + 1) + i + 1], c = nodes[(j + 1) * (N + 1) + i];
+    cg.push(a && b && c && d ? Math.sqrt(Math.abs(((b[0] - c[0]) * (d[1] - a[1]) - (d[0] - a[0]) * (b[1] - c[1])) / 2) / ((s.W / N) * (s.H / M))) : null);
+  }
+  const ok = cg.filter(x => x).sort((p, q) => p - q); if (ok.length < 4) return false;
+  s.nodes = nodes; s.cg = cg; s.gsd = ok[ok.length >> 1];
+  const v = nodes.filter(Boolean);
+  s.c = nodes[(M >> 1) * (N + 1) + (N >> 1)] || [v.reduce((a, p) => a + p[0], 0) / v.length, v.reduce((a, p) => a + p[1], 0) / v.length];
+  s.L = Math.max(1, s.gsd * Math.hypot(s.W, s.H) / 2);
+  return true;
+}
+/* ---------- camera model ----------
+   Calibration + interior orientation, shared by every frame (G = [lnF, k1, k2, cx, cy]):
+     lnF      focal setting: one scale on the reported field of view (log)
+     k1, k2   radial distortion about the principal point, radius in half-widths, divergent away from the centre
+     cx, cy   principal point offset (where the plate sits in the camera), in half-width / half-height units
+   observed (distorted) normalised coords -> ideal */
+function mosUndist(u, v, G, asp) {
+  const x = u - G[3], y = v - G[4], r2 = x * x + (y * asp) ** 2, f = 1 / (1 + G[1] * r2 + G[2] * r2 * r2); return [x * f, y * f];
+}
+
+/* ---------- photogrammetric orientation solve ----------
+   Exterior orientation per frame from the matched pairs: az, el, roll offsets (degrees) and a small per-frame focal term
+   (zoom the encoder reports late), sensor positions held at the metadata. The mean exterior correction over all frames
+   is held at zero, so the solve cannot rotate or scale the whole block away from the metadata (that is unobservable from
+   tie points; calibration lines fix the absolute). A tie point seen in frame a is intersected with the surface (elevation
+   model, else the flat reference) and reprojected into frame b; residuals are image pixels, both directions.
+   Normal equations: banded per-frame blocks (links to the previous 2 frames) + a rank-4 mean constraint (Woodbury) +
+   a border for the 5 shared parameters (Schur). Levenberg–Marquardt on a graduated Tukey cost. */
+async function mosCameraBA(samples, job, tick, G0, surf) {
+  const K = samples.length, W = samples[0].W, H = samples[0].H, asp = H / W, NP = 4 * K, NG = 5;
+  const ties = [];
+  samples.forEach((s, k) => { for (const L of s.links) for (const q of L.pairs) { ties.push({ a: L.j, b: k, ua: q[0], va: q[1], ub: q[2], vb: q[3] }); ties.push({ a: k, b: L.j, ua: q[2], va: q[3], ub: q[0], vb: q[1] }); } });
+  if (ties.length < 24) return null;
+  for (const s of samples) if (!s.p) s.p = [0, 0, 0, 0];
+  let G = G0 ? G0.slice() : [0, 0, 0, 0, 0];
+  const DL = [1e-3, 1e-3, 1e-3, 1e-4], DG = [1e-4, 1e-4, 1e-4, 1e-5, 1e-5];
+  const sigA = CFG.mosSigA, PRI = [1 / sigA ** 2, 1 / sigA ** 2, 1 / sigA ** 2, 1 / 0.01 ** 2], PRG = [1 / (CFG.mosSigF / 100) ** 2, 1 / 0.2 ** 2, 1 / 0.2 ** 2, 1 / 0.005 ** 2, 1 / 0.005 ** 2];
+  const cam = (s, p, lnF) => { const st = stCorr(s.st, [p[0], p[1], p[2], p[3] + lnF]), R = sensorRot(st); return { st, R, th: Math.tan(st.hfov * D2R / 2), tv: Math.tan(vfovOf(st) * D2R / 2), alt: sensAltMSL(st), mLat: mpdLat(st.sensLat), mLon: mpdLon(st.sensLat) }; };
+  const ground = (c, u, v, h) => {
+    const d = norm3(mv3(c.R, [1, u * c.th, v * c.tv])); if (d[2] <= 1e-6) return null;
+    const qa = (d[0] * d[0] + d[1] * d[1]) / (2 * RE), dz = c.alt - h; let r = dz / d[2];
+    if (qa > 1e-12) { const disc = d[2] * d[2] - 4 * qa * dz; if (disc > 0) r = (d[2] - Math.sqrt(disc)) / (2 * qa); }
+    if (!(r > 0)) return null;
+    return [c.st.sensLat + d[0] * r / c.mLat, c.st.sensLon + d[1] * r / c.mLon];
+  };
+  { const C = samples.map(s => cam(s, s.p, G[0])); for (const T of ties) { const q = mosUndist(T.ua, T.va, G, asp), g = mosHit(C[T.a], q[0], q[1], surf); T.h = g ? g[2] : surf.flat; } }
+  const resOf = (T, ca, cb, g) => {
+    const qa = mosUndist(T.ua, T.va, g, asp), qb = mosUndist(T.ub, T.vb, g, asp), gp = ground(ca, qa[0], qa[1], T.h); if (!gp) return null;
+    const pb = worldToImage(cb.st, cb.R, gp[0], gp[1], T.h); if (!pb) return null;
+    return [(pb[0] - qb[0]) * W / 2, (pb[1] - qb[1]) * H / 2, gp];
+  };
+  const rho = (m, c) => m >= c ? c * c / 6 : c * c / 6 * (1 - (1 - (m / c) ** 2) ** 3);
+  const cams = (P, g) => samples.map((s, k) => cam(s, P[k], g[0]));
+  const cost = (P, g, cc) => { const C = cams(P, g); let e = 0; for (const T of ties) { const r = resOf(T, C[T.a], C[T.b], g); e += r ? rho(Math.hypot(r[0], r[1]), cc) : cc * cc / 6; } for (let k = 0; k < K; k++) for (let q = 0; q < 4; q++) e += 0.5 * PRI[q] * P[k][q] ** 2; for (let q = 0; q < NG; q++) e += 0.5 * PRG[q] * g[q] ** 2; return e; };
+  const stats = () => { const e = [], C = cams(samples.map(s => s.p), G); for (const T of ties) { const r = resOf(T, C[T.a], C[T.b], G); if (r) e.push(Math.hypot(r[0], r[1])); } e.sort((x, y) => x - y); return { med: e[e.length >> 1], p90: e[Math.floor(e.length * 0.9)], n: e.length }; };
+  const before = stats();
+  const B = 11, w = B + 1, WM = 1e8; let cc = Math.max(2, 3 * before.med), lam = 1e-2, it = 0;
+  while (it < 25) {
+    const P0 = samples.map(s => s.p), C0 = cams(P0, G), CV = samples.map((s, k) => [0, 1, 2, 3].map(q => { const p = P0[k].slice(); p[q] += DL[q]; return cam(s, p, G[0]); })), CF = samples.map((s, k) => cam(s, P0[k], G[0] + DG[0]));
+    const A = new Float64Array(NP * w), g = new Float64Array(NP), Cb = [...Array(NG)].map(() => new Float64Array(NP)), D = [...Array(NG)].map(() => new Float64Array(NG)), h = new Float64Array(NG);
+    for (const T of ties) {
+      const r0 = resOf(T, C0[T.a], C0[T.b], G); if (!r0) continue;
+      const m = Math.hypot(r0[0], r0[1]); if (m >= cc) continue; const tw = 1 - (m / cc) ** 2, wt = tw * tw;
+      const J = [], JG = [], d = (r, dl) => r ? [(r[0] - r0[0]) / dl, (r[1] - r0[1]) / dl] : [0, 0];
+      for (let q = 0; q < 4; q++) J.push(d(resOf(T, CV[T.a][q], C0[T.b], G), DL[q]));
+      for (let q = 0; q < 4; q++) J.push(d(resOf(T, C0[T.a], CV[T.b][q], G), DL[q]));
+      JG.push(d(resOf(T, CF[T.a], CF[T.b], G), DG[0]));
+      for (let q = 1; q < NG; q++) { const g2 = G.slice(); g2[q] += DG[q]; JG.push(d(resOf(T, C0[T.a], C0[T.b], g2), DG[q])); }
+      const idx = [4 * T.a, 4 * T.a + 1, 4 * T.a + 2, 4 * T.a + 3, 4 * T.b, 4 * T.b + 1, 4 * T.b + 2, 4 * T.b + 3];
+      for (let i = 0; i < 8; i++) {
+        const Ji = J[i], a = idx[i]; g[a] -= wt * (Ji[0] * r0[0] + Ji[1] * r0[1]);
+        for (let j = 0; j < 8; j++) { const b = idx[j]; if (b >= a) A[a * w + (b - a)] += wt * (Ji[0] * J[j][0] + Ji[1] * J[j][1]); }
+        for (let q = 0; q < NG; q++) Cb[q][a] += wt * (Ji[0] * JG[q][0] + Ji[1] * JG[q][1]);
+      }
+      for (let q = 0; q < NG; q++) { h[q] -= wt * (JG[q][0] * r0[0] + JG[q][1] * r0[1]); for (let q2 = 0; q2 < NG; q2++) D[q][q2] += wt * (JG[q][0] * JG[q2][0] + JG[q][1] * JG[q2][1]); }
+    }
+    for (let k = 0; k < K; k++) for (let q = 0; q < 4; q++) { A[(4 * k + q) * w] += PRI[q]; g[4 * k + q] -= PRI[q] * P0[k][q]; }
+    for (let q = 0; q < NG; q++) { D[q][q] += PRG[q]; h[q] -= PRG[q] * G[q]; }
+    // Levenberg–Marquardt: try steps with growing damping until the robust cost drops
+    const E0 = cost(P0, G, cc); let accepted = false;
+    for (let tries = 0; tries < 6 && !accepted; tries++) {
+      const Ad = new Float64Array(A); for (let i = 0; i < NP; i++) Ad[i * w] *= 1 + lam;
+      const Dd = D.map((r, i) => r.map((x, j) => i === j ? x * (1 + lam) : x));
+      const sol = bandChol(NP, B, Ad); if (!sol) { lam *= 10; continue; }
+      // (A + U WM U^T)^-1 v with U = per-parameter means (rank 4)
+      const mean = v => [0, 1, 2, 3].map(q => { let s2 = 0; for (let k = 0; k < K; k++) s2 += v[4 * k + q] / K; return s2; });
+      const Z = [0, 1, 2, 3].map(q => { const u = new Float64Array(NP); for (let k = 0; k < K; k++) u[4 * k + q] = 1 / K; return sol(u); });
+      const Mz = [0, 1, 2, 3].map(r => { const m2 = mean(Z[r]); return m2.map((x, c) => x + (r === c ? 1 / WM : 0)); });
+      const solW = v => { const y = sol(v), cf = solveLin([0, 1, 2, 3].map(r => [0, 1, 2, 3].map(c => Mz[c][r])), mean(y)); if (!cf) return y; return y.map((x, i) => x - Z.reduce((s2, z, q) => s2 + z[i] * cf[q], 0)); };
+      const X = Cb.map(c => solW(c)), Yg = solW(g);
+      const Sm = Dd.map((row, i) => row.map((x, j) => { let s2 = 0; for (let n = 0; n < NP; n++) s2 += Cb[i][n] * X[j][n]; return x - s2; }));
+      const rh = [...h].map((x, i) => { let s2 = 0; for (let n = 0; n < NP; n++) s2 += Cb[i][n] * Yg[n]; return x - s2; });
+      const dG = solveLin(Sm, rh) || [0, 0, 0, 0, 0];
+      const dx = Yg.map((x, n) => x - X.reduce((s2, Xi, q) => s2 + Xi[n] * dG[q], 0));
+      const P1 = P0.map((p, k) => p.map((x, q) => x + dx[4 * k + q])), G1 = G.map((x, q) => x + dG[q]);
+      G1[1] = clamp(G1[1], -0.5, 0.5); G1[2] = clamp(G1[2], -0.5, 0.5);
+      const E1 = cost(P1, G1, cc);
+      if (E1 < E0) { accepted = true; samples.forEach((s, k) => { s.p = P1[k]; }); G = G1; lam = Math.max(1e-6, lam / 3); }
+      else lam *= 5;
+    }
+    it++;
+    if (window.MOSDBG) (MOS.baLog = MOS.baLog || []).push({ it, cc, lam, acc: accepted, ...stats() });
+    { const C = cams(samples.map(s => s.p), G); for (const T of ties) { const r = resOf(T, C[T.a], C[T.b], G); if (r) T.h = surf(r[2][0], r[2][1]); } }
+    job.p = Math.min(1, it / 20); await tick();
+    if (cc > 2) cc = Math.max(2, cc * 0.6); else if (!accepted || lam > 1e3) break;
+  }
+  const after = stats();
+  const rot = Math.sqrt(samples.reduce((a, s) => a + s.p[0] ** 2 + s.p[1] ** 2 + s.p[2] ** 2, 0) / (3 * K)), fov = Math.sqrt(samples.reduce((a, s) => a + s.p[3] ** 2, 0) / K) * 100;
+  return { G, k1: G[1], before, after, rot, fov, n: ties.length / 2, links: samples.reduce((a, s) => a + s.links.length, 0) };
+}
+
+
+/* ---------- one ground surface for the whole mosaic ----------
+   The elevation model when one is loaded; otherwise a smooth surface through the encoder's frame-centre heights
+   (KLV tag 25 is the terrain height under each frame centre), gridded once. Draping each frame on its own flat plane
+   at its own frame-centre height puts neighbouring frames on different planes, which shows as steps at the seams. */
+function mosSurface(samples) {
+  const pts = []; for (const s of samples) { const st = s.st || S.track.at(s.t); if (st && isNum(st.fcLat) && isNum(st.fcLon) && isNum(refElev(st))) pts.push([st.fcLat, st.fcLon, refElev(st)]); }
+  const ll = samples.flatMap(s => (s.ll || []).filter(Boolean)); if (!ll.length) return null;
+  let la0 = Math.min(...ll.map(q => q[0])), la1 = Math.max(...ll.map(q => q[0])), lo0 = Math.min(...ll.map(q => q[1])), lo1 = Math.max(...ll.map(q => q[1]));
+  const pad = 0.2 * Math.max(la1 - la0, lo1 - lo0, 1e-4); la0 -= pad; la1 += pad; lo0 -= pad; lo1 += pad;
+  const flat = pts.length ? pts.map(p => p[2]).sort((a, b) => a - b)[pts.length >> 1] : CFG.flatElev, NG = 48, Z = new Float32Array(NG * NG);
+  const mLa = mpdLat((la0 + la1) / 2), mLo = mpdLon((la0 + la1) / 2), r0 = 30; // m: smoothing radius
+  for (let j = 0; j < NG; j++) for (let i = 0; i < NG; i++) {
+    const la = la0 + (la1 - la0) * j / (NG - 1), lo = lo0 + (lo1 - lo0) * i / (NG - 1); let sw = 0, sz = 0;
+    for (const p of pts) { const d2 = ((p[0] - la) * mLa) ** 2 + ((p[1] - lo) * mLo) ** 2 + r0 * r0, w = 1 / d2; sw += w; sz += w * p[2]; }
+    Z[j * NG + i] = sw ? sz / sw : flat;
+  }
+  const grid = (lat, lon) => { const fx = clamp((lon - lo0) / (lo1 - lo0) * (NG - 1), 0, NG - 1.001), fy = clamp((lat - la0) / (la1 - la0) * (NG - 1), 0, NG - 1.001), i = fx | 0, j = fy | 0, a = fx - i, b = fy - j, k = j * NG + i; return (Z[k] * (1 - a) + Z[k + 1] * a) * (1 - b) + (Z[k + NG] * (1 - a) + Z[k + NG + 1] * a) * b; };
+  const f = (lat, lon) => { if (DEM.active()) { const v = DEM.sample(lat, lon); if (v !== null) return v; } return grid(lat, lon); };
+  f.kind = DEM.active() ? 'elevation model' : pts.length ? 'frame-centre heights (' + pts.length + ' points)' : 'flat ' + flat + ' m'; f.flat = flat;
+  return f;
+}
+function mosCamOf(s, p, lnF) { const st = stCorr(s.st, [p[0], p[1], p[2], p[3] + lnF]), R = sensorRot(st); return { st, R, th: Math.tan(st.hfov * D2R / 2), tv: Math.tan(vfovOf(st) * D2R / 2), alt: sensAltMSL(st), mLat: mpdLat(st.sensLat), mLon: mpdLon(st.sensLat) }; }
+function mosRayH(c, u, v, h) {
+  const d = norm3(mv3(c.R, [1, u * c.th, v * c.tv])); if (d[2] <= 1e-6) return null;
+  const qa = (d[0] * d[0] + d[1] * d[1]) / (2 * RE), dz = c.alt - h; let r = dz / d[2];
+  if (qa > 1e-12) { const disc = d[2] * d[2] - 4 * qa * dz; if (disc > 0) r = (d[2] - Math.sqrt(disc)) / (2 * qa); }
+  if (!(r > 0) || r > CFG.maxRange) return null;
+  return [c.st.sensLat + d[0] * r / c.mLat, c.st.sensLon + d[1] * r / c.mLon];
+}
+/* ray to the surface by fixed-point iteration on height (surfaces here are smooth at the scale of a pixel ray) */
+function mosHit(c, u, v, surf, h0) { let h = h0 ?? surf.flat, g = null; for (let k = 0; k < 6; k++) { g = mosRayH(c, u, v, h); if (!g) return null; const h2 = surf(g[0], g[1]); if (Math.abs(h2 - h) < 0.05) { h = h2; break; } h = h2; } g = mosRayH(c, u, v, h); return g && [g[0], g[1], h]; }
+
+/* ---------- rectify each frame to the ground, then match pairs on the rectified frames ----------
+   Each chosen frame is resampled from its raw pixels onto a common UTM grid: radial distortion and principal point
+   removed, then the camera taken to nadir through its current orientation and the elevation model. Neighbouring
+   rectified frames then differ by little more than a shift, so matching is reliable and the misfit is ground metres.
+   Each tie is mapped back to the raw image (observed coordinates) for the orientation solve. */
+function mosDist(x, y, G, asp) { let xd = x, yd = y; for (let i = 0; i < 4; i++) { const r2 = xd * xd + (yd * asp) ** 2, f = 1 + G[1] * r2 + G[2] * r2 * r2; xd = x * f; yd = y * f; } return [xd + G[3], yd + G[4]]; }
+function mosPyr(d, w, h) {
+  const P = [{ d, w, h }];
+  while (P.length < 4 && P[P.length - 1].w > 16 && P[P.length - 1].h > 16) {
+    const s = P[P.length - 1], w2 = s.w >> 1, h2 = s.h >> 1, e = new Float32Array(w2 * h2);
+    for (let y = 0; y < h2; y++) for (let x = 0; x < w2; x++) { const k = 2 * y * s.w + 2 * x; e[y * w2 + x] = (s.d[k] + s.d[k + 1] + s.d[k + s.w] + s.d[k + s.w + 1]) * 0.25; }
+    P.push({ d: e, w: w2, h: h2 });
+  }
+  return P;
+}
+function mosRectTile(s, G, grid, zone, south, maxPx, surf) {
+  const c = mosCamOf(s, s.p, G[0]);
+  const asp = s.H / s.W, Nn = s.N, M = s.M, ext = [Infinity, Infinity, -Infinity, -Infinity];
+  for (let j = 0; j <= M; j++) for (let i = 0; i <= Nn; i++) {
+    const q = mosUndist(-1 + 2 * i / Nn, -1 + 2 * j / M, G, asp), gp = mosHit(c, q[0], q[1], surf); if (!gp) continue;
+    const X = UTM.fwd(gp[0], gp[1], zone, south); ext[0] = Math.min(ext[0], X[0]); ext[1] = Math.min(ext[1], X[1]); ext[2] = Math.max(ext[2], X[0]); ext[3] = Math.max(ext[3], X[1]);
+  }
+  if (!(ext[2] > ext[0])) return null;
+  const gm = grid.g; let x0 = Math.floor((ext[0] - grid.E0) / gm), x1 = Math.ceil((ext[2] - grid.E0) / gm), y0 = Math.floor((grid.N0 - ext[3]) / gm), y1 = Math.ceil((grid.N0 - ext[1]) / gm);
+  if (x1 - x0 > maxPx) { const m = (x0 + x1) >> 1; x0 = m - (maxPx >> 1); x1 = x0 + maxPx; }
+  if (y1 - y0 > maxPx) { const m = (y0 + y1) >> 1; y0 = m - (maxPx >> 1); y1 = y0 + maxPx; }
+  const w = x1 - x0, h = y1 - y0, S8 = 8, lw = Math.ceil(w / S8) + 2, lh = Math.ceil(h / S8) + 2, LU = new Float32Array(lw * lh).fill(NaN), LV = new Float32Array(lw * lh).fill(NaN);
+  for (let j = 0; j < lh; j++) for (let i = 0; i < lw; i++) {
+    const E = grid.E0 + (x0 + i * S8 + 0.5) * gm, N = grid.N0 - (y0 + j * S8 + 0.5) * gm, [lat, lon] = UTM.inv(E, N, zone, south);
+    const uv = worldToImage(c.st, c.R, lat, lon, surf(lat, lon)); if (!uv) continue;
+    const o = mosDist(uv[0], uv[1], G, asp); if (Math.abs(o[0]) > 1.2 || Math.abs(o[1]) > 1.2) continue;
+    LU[j * lw + i] = o[0]; LV[j * lw + i] = o[1];
+  }
+  const obsAt = (x, y) => { const fx = x / S8, fy = y / S8, i = Math.floor(fx), j = Math.floor(fy); if (i < 0 || j < 0 || i >= lw - 1 || j >= lh - 1) return null; const a = fx - i, b = fy - j, k = j * lw + i;
+    const u = (LU[k] * (1 - a) + LU[k + 1] * a) * (1 - b) + (LU[k + lw] * (1 - a) + LU[k + lw + 1] * a) * b, v = (LV[k] * (1 - a) + LV[k + 1] * a) * (1 - b) + (LV[k + lw] * (1 - a) + LV[k + lw + 1] * a) * b; return isFinite(u) && isFinite(v) ? [u, v] : null; };
+  const d = new Float32Array(w * h), ok = new Uint8Array(w * h), SW = s.W, SH = s.H, g8 = s.g8;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const o = obsAt(x, y); if (!o) continue; const px = (o[0] + 1) / 2 * SW - 0.5, py = (o[1] + 1) / 2 * SH - 0.5;
+    if (px < 0 || py < 0 || px > SW - 1.001 || py > SH - 1.001) continue;
+    const ix = px | 0, iy = py | 0, ax = px - ix, ay = py - iy, k = iy * SW + ix;
+    d[y * w + x] = (g8[k] * (1 - ax) + g8[k + 1] * ax) * (1 - ay) + (g8[k + SW] * (1 - ax) + g8[k + SW + 1] * ax) * ay; ok[y * w + x] = 1;
+  }
+  // fill outside with the mean so pyramids and LK windows see no false edges at the footprint boundary
+  let sm = 0, n = 0; for (let i = 0; i < w * h; i++) if (ok[i]) { sm += d[i]; n++; } const mu = n ? sm / n : 128; for (let i = 0; i < w * h; i++) if (!ok[i]) d[i] = mu;
+  // inner mask (8 px away from the footprint edge)
+  const inn = new Uint8Array(w * h), R = 8;
+  for (let y = R; y < h - R; y++) for (let x = R; x < w - R; x++) { const k = y * w + x; if (ok[k] && ok[k - R] && ok[k + R] && ok[k - R * w] && ok[k + R * w] && ok[k - R - R * w] && ok[k + R + R * w] && ok[k + R - R * w] && ok[k - R + R * w]) inn[k] = 1; }
+  return { x0, y0, w, h, P: mosPyr(d, w, h), inn, obsAt };
+}
+function mosMatchTiles(A, B, ovl, sA, maxN) {
+  // coarse shift at the top pyramid level (NCC over the overlap), then LK per corner, forward–backward, RANSAC
+  const la = A.P.length - 1, lb = B.P.length - 1, lv = Math.min(la, lb, 3), sc = 1 << lv, a = A.P[lv], b = B.P[lv];
+  const ox = (A.x0 - B.x0) / sc, oy = (A.y0 - B.y0) / sc, Rr = 12;
+  let best = { c: -2, dx: 0, dy: 0 };
+  for (let dy = -Rr; dy <= Rr; dy++) for (let dx = -Rr; dx <= Rr; dx++) {
+    let sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0, n = 0;
+    for (let y = 2; y < a.h - 2; y += 2) { const yb = Math.round(y + oy + dy); if (yb < 2 || yb >= b.h - 2) continue;
+      for (let x = 2; x < a.w - 2; x += 2) { const xb = Math.round(x + ox + dx); if (xb < 2 || xb >= b.w - 2) continue;
+        if (!A.inn[Math.min(A.h - 1, y * sc) * A.w + Math.min(A.w - 1, x * sc)] || !B.inn[Math.min(B.h - 1, yb * sc) * B.w + Math.min(B.w - 1, xb * sc)]) continue;
+        const p = a.d[y * a.w + x], q = b.d[yb * b.w + xb]; sa += p; sb += q; saa += p * p; sbb += q * q; sab += p * q; n++; } }
+    if (n < 40) continue; const va = saa - sa * sa / n, vb = sbb - sb * sb / n; if (va < 1e-3 || vb < 1e-3) continue;
+    const c = (sab - sa * sb / n) / Math.sqrt(va * vb); if (c > best.c) best = { c, dx, dy };
+  }
+  if (best.c < 0.3) return null;
+  const gx = A.x0 - B.x0 + best.dx * sc, gy = A.y0 - B.y0 + best.dy * sc, L0 = A.P[0];
+  const inside = (x, y) => { if (!A.inn[y * A.w + x]) return false; const xb = Math.round(x + gx), yb = Math.round(y + gy); if (xb < 0 || yb < 0 || xb >= B.w || yb >= B.h || !B.inn[yb * B.w + xb]) return false;
+    if (ovl) { const o = A.obsAt(x, y); if (!o) return false; const px = ((o[0] + 1) / 2 * sA.W) | 0, py = ((o[1] + 1) / 2 * sA.H) | 0; if (ovl.m[((py / ovl.f) | 0) * ovl.w + ((px / ovl.f) | 0)]) return false; } return true; };
+  const pts = goodFeatures(L0, [8, 8, L0.w - 16, L0.h - 16], inside, maxN, Math.max(8, Math.min(L0.w, L0.h) / 30), 2, [], 0.02), pr = [];
+  for (const [x, y] of pts) {
+    const f = lkPoint(A.P, B.P, x, y, gx, gy, 7); if (!f) continue;
+    const r = lkPoint(B.P, A.P, f[0], f[1], x - f[0], y - f[1], 7); if (!r || Math.hypot(r[0] - x, r[1] - y) > 1) continue;
+    pr.push({ p: [x, y], q: f });
+  }
+  const rs = pr.length >= 12 ? ransacSim(pr.map(e => ({ p: e.p, q: [e.q[0] - (A.x0 - B.x0), e.q[1] - (A.y0 - B.y0)] })), 2, 120) : null; // in common-grid pixels
+  if (!rs || rs.n < 12) return null;
+  return { inl: rs.inl.map(e => ({ p: e.p, q: [e.q[0] + (A.x0 - B.x0), e.q[1] + (A.y0 - B.y0)] })), coarse: best };
+}
+async function mosRectMatch(samples, G, ovl, zone, south, job, tick, label, surf) {
+  const gs = samples.map(s => s.gsd).sort((a, b) => a - b), gm = gs[gs.length >> 1];
+  const all = samples.flatMap(s => s.nodes.filter(Boolean)); const E0 = Math.min(...all.map(p => p[0])) - 1000, N0 = Math.max(...all.map(p => p[1])) + 1000;
+  const grid = { g: gm, E0: Math.floor(E0 / gm) * gm, N0: Math.ceil(N0 / gm) * gm };
+  const win = [], mis = []; let n = 0;
+  for (let k = 0; k < samples.length; k++) {
+    if (job.cancel) throw new Error('cancelled');
+    const s = samples[k]; let T = mosRectTile(s, G, grid, zone, south, 1600, surf); if (T && T.P.length < 4) T = null; s.links = [];
+    if (T) for (const prev of win) {
+      const m = mosMatchTiles(prev.T, T, ovl, prev.s, prev.k === k - 1 ? 260 : 180); if (!m) continue;
+      const pairs = []; for (const e of m.inl) { const oa = prev.T.obsAt(e.p[0], e.p[1]), ob = T.obsAt(e.q[0], e.q[1]); if (oa && ob) { pairs.push([oa[0], oa[1], ob[0], ob[1]]); mis.push(Math.hypot(e.q[0] + T.x0 - e.p[0] - prev.T.x0, e.q[1] + T.y0 - e.p[1] - prev.T.y0) * gm); } }
+      if (pairs.length >= 12) { s.links.push({ j: prev.k, pairs }); n += pairs.length; }
+    }
+    win.push({ k, s, T }); if (win.length > 2) win.shift();
+    job.p = (k + 1) / samples.length; job.sub = label; if (k % 2 === 1) await tick();
+  }
+  mis.sort((a, b) => a - b);
+  return { n, gm, med: mis.length ? mis[mis.length >> 1] : null, p90: mis.length ? mis[Math.floor(mis.length * 0.9)] : null, links: samples.reduce((a, s) => a + s.links.length, 0) };
+}
+
 /* ---------- build ---------- */
 function mosRange() {
   const clip = isNum(S.inT) && isNum(S.outT) && S.outT > S.inT;
@@ -4805,44 +5059,39 @@ async function mosBuild() {
     const samples = [], NM = CFG.mosMesh;
     let G = await grabRGB(S.frames[i0] + 1e-3), GP = grayPyr(G), L1 = lumPyr(G);
     const Wd = TRK.W, Hd = TRK.H, edge = 8;
-    let chain = [], prev = null, chainOK = true, skipped = 0;
+    let chain = [], prev = null, chainOK = true, skipped = 0, prev2 = null, prevChain = [], prevChainOK = false;
     const pred = (x, y) => { let p = [x, y]; for (const m of chain) p = gmApply(m, p); return p; };
+    const pred2 = (x, y) => { let p = [x, y]; for (const m of prevChain) p = gmApply(m, p); for (const m of chain) p = gmApply(m, p); return p; };
     const snap = () => new Promise(res => TRK.cv.toBlob(b => res(b), 'image/jpeg', 0.92));
+    const inMask = ovl ? (x, y) => !ovl.m[((y / ovl.f) | 0) * ovl.w + ((x / ovl.f) | 0)] : () => true;
+    // tie points between an earlier chosen frame and this one: LK from the composed camera motion, forward–backward checked, RANSAC
+    const match = (fromGP, pf, nMax, far) => {
+      const pts = goodFeatures(fromGP[0], [10, 10, Wd - 20, Hd - 20], inMask, nMax, Math.max(10, Wd / 40), 2, [], 0.03), P2 = [];
+      for (const [x, y] of pts) {
+        const [px, py] = pf(x, y); if (px < edge || py < edge || px > Wd - edge || py > Hd - edge) continue;
+        const f = lkPoint(fromGP, GP, x, y, px - x, py - y, 7); if (!f) continue;
+        const r = lkPoint(GP, fromGP, f[0], f[1], x - f[0], y - f[1], 7); if (!r || Math.hypot(r[0] - x, r[1] - y) > 1.5) continue;
+        if (Math.hypot(f[0] - px, f[1] - py) > far) continue;
+        P2.push({ p: [x, y], q: f });
+      }
+      const rs = P2.length >= 12 ? ransacSim(P2, Math.max(2.5, Wd / 250), 120) : null;
+      return rs && rs.n >= 12 ? rs.inl.map(e => [(e.p[0] + 0.5) / Wd * 2 - 1, (e.p[1] + 0.5) / Hd * 2 - 1, (e.q[0] + 0.5) / Wd * 2 - 1, (e.q[1] + 0.5) / Hd * 2 - 1]) : [];
+    };
     const addSample = async (t) => {
-      const st = S.track.at(t), Pj = st && makeProjector(st);
+      const st0 = S.track.at(t), Pj = st0 && makeProjector(st0);
       if (!Pj) { skipped++; return false; }
-      const M = Math.max(2, Math.round(NM * Hd / Wd)), nodes = [];
-      for (let j = 0; j <= M; j++) for (let i = 0; i <= NM; i++) {
-        const gp = Pj.toGround(-1 + 2 * i / NM, -1 + 2 * j / M);
-        if (!gp || gp.horizon || !isNum(gp.lat)) { nodes.push(null); continue; }
-        if (!zone) { zone = UTM.zone(gp.lon); south = gp.lat < 0; }
-        nodes.push(UTM.fwd(gp.lat, gp.lon, zone, south));
-      }
-      // per-cell ground resolution; cells far beyond the frame's typical resolution (grazing, near-horizon) are dropped
-      const cg = [];
-      for (let j = 0; j < M; j++) for (let i = 0; i < NM; i++) {
-        const a = nodes[j * (NM + 1) + i], d = nodes[(j + 1) * (NM + 1) + i + 1], b = nodes[j * (NM + 1) + i + 1], c = nodes[(j + 1) * (NM + 1) + i];
-        cg.push(a && b && c && d ? Math.sqrt(Math.abs(((b[0] - c[0]) * (d[1] - a[1]) - (d[0] - a[0]) * (b[1] - c[1])) / 2) / ((Wd / NM) * (Hd / M))) : null);
-      }
-      const ok = cg.filter(x => x).sort((p, q) => p - q); if (ok.length < 4) { skipped++; return false; }
-      const gsd = ok[ok.length >> 1];
-      const cx = nodes[(M >> 1) * (NM + 1) + (NM >> 1)] || (() => { const v = nodes.filter(Boolean); return [v.reduce((s, p) => s + p[0], 0) / v.length, v.reduce((s, p) => s + p[1], 0) / v.length]; })();
-      const s = { t, nodes, N: NM, M, cg, gsd, c: cx, L: Math.max(1, gsd * Math.hypot(Wd, Hd) / 2), W: Wd, H: Hd, blob: await snap(), pairs: [] };
-      // image correspondences with the previous chosen frame (LK from the composed camera motion, forward–backward checked, RANSAC)
-      if (prev && chainOK) {
-        const pts = goodFeatures(prev.GP[0], [10, 10, Wd - 20, Hd - 20], ovl ? (x, y) => !ovl.m[((y / ovl.f) | 0) * ovl.w + ((x / ovl.f) | 0)] : () => true, 220, Math.max(10, Wd / 40), 2, [], 0.03);
-        const P2 = [];
-        for (const [x, y] of pts) {
-          const [px, py] = pred(x, y); if (px < edge || py < edge || px > Wd - edge || py > Hd - edge) continue;
-          const f = lkPoint(prev.GP, GP, x, y, px - x, py - y, 7); if (!f) continue;
-          const r = lkPoint(GP, prev.GP, f[0], f[1], x - f[0], y - f[1], 7); if (!r || Math.hypot(r[0] - x, r[1] - y) > 1.5) continue;
-          if (Math.hypot(f[0] - px, f[1] - py) > Math.max(30, Wd / 15)) continue;
-          P2.push({ p: [x, y], q: f });
-        }
-        const rs = P2.length >= 12 ? ransacSim(P2, Math.max(2.5, Wd / 250), 120) : null;
-        if (rs && rs.n >= 12) s.pairs = rs.inl.map(e => [(e.p[0] + 0.5) / Wd * 2 - 1, (e.p[1] + 0.5) / Hd * 2 - 1, (e.q[0] + 0.5) / Wd * 2 - 1, (e.q[1] + 0.5) / Hd * 2 - 1]);
-      }
-      samples.push(s); prev = { GP, s }; chain = []; chainOK = true;
+      // camera state the orientation solve starts from (analyst calibration folded in when it is a camera correction)
+      let stB = null; const KK = calAt(t);
+      if (useComputed(st0) && (!KK || KK.sens)) stB = KK && KK.sens ? stCorr(st0, [KK.sens.az, KK.sens.el, KK.sens.roll, Math.log(KK.sens.k)]) : st0;
+      const M = Math.max(2, Math.round(NM * Hd / Wd));
+      const s = { t, st: stB, N: NM, M, W: Wd, H: Hd, pairs: [], links: [] };
+      if (!mosNodes(s, Pj.toGround)) { skipped++; return false; }
+      if (!zone) { const c = s.ll.find(Boolean); zone = UTM.zone(c[1]); south = c[0] < 0; }
+      if (!mosUTM(s, zone, south)) { skipped++; return false; }
+      s.blob = await snap(); { const d = GP[0].d, g8 = new Uint8ClampedArray(d.length); for (let i = 0; i < d.length; i++) g8[i] = d[i]; s.g8 = g8; }
+      if (prev && chainOK) { s.pairs = match(prev.GP, pred, 220, Math.max(30, Wd / 15)); if (s.pairs.length) s.links.push({ j: samples.length - 1, pairs: s.pairs }); }
+      if (prev2 && chainOK && prevChainOK) { const q = match(prev2.GP, pred2, 160, Math.max(40, Wd / 10)); if (q.length) s.links.push({ j: samples.length - 2, pairs: q }); }
+      samples.push(s); prev2 = prev; prevChain = chain; prevChainOK = chainOK; prev = { GP, s }; chain = []; chainOK = true;
       return true;
     };
     await addSample(S.frames[i0]);
@@ -4861,8 +5110,7 @@ async function mosBuild() {
       job.p = (i - i0) / Math.max(1, i1 - i0); job.n = samples.length; if (++n % 6 === 0) await tick();
     }
     if (samples.length < 1) throw new Error('no frames with ground geometry in this range');
-    for (const s of samples) s.GP = null;
-    if (prev) prev.GP = null;
+    if (prev) prev.GP = null; if (prev2) prev2.GP = null;
 
     // ---- register: per-frame ground similarity [α, β, tx, ty] (metres at radius L) ----
     job.stage = 'registering'; job.p = 0; await tick();
@@ -4883,7 +5131,30 @@ async function mosBuild() {
     const rmsOf = () => { if (!obs.length) return { m: 0, px: 0 }; let sm = 0, sp = 0; const e = obs.map(o => { const r = resid(o), m = Math.hypot(r[0], r[1]); return [m, m / o.sig]; }); e.sort((x, y) => x[0] - y[0]); for (const [m, p] of e) { sm += m * m; sp += p * p; } return { m: Math.sqrt(sm / e.length), px: Math.sqrt(sp / e.length), med: e[e.length >> 1][0], medPx: e.slice().sort((x, y) => x[1] - y[1])[e.length >> 1][1] }; };
     const before = rmsOf();
     const pairsOK = samples.filter(s => s.pairs.length).length;
-    if (CFG.mosReg && obs.length) {
+    let mode = 'none', camRes = null;
+    if (CFG.mosReg && CFG.mosCam && obs.length && samples.every(s => s.st)) {
+      // photogrammetric: solve each frame's orientation (az, el, roll, field of view) and one radial lens term from the tie points
+      // 1–3: correct each frame (radial distortion, principal point, camera to nadir) and rectify it to the ground;
+      // 4: match neighbouring rectified frames; 5: solve orientation from those pairs; then repeat once with the refined model
+      let Gc = [0, 0, 0, 0, 0]; for (const s of samples) s.p = [0, 0, 0, 0];
+      const surf = mosSurface(samples);
+      const rect = [];
+      for (let round = 0; round < 3; round++) {
+        job.stage = 'rectify + match ' + (round + 1); await tick();
+        const rm = await mosRectMatch(samples, Gc, ovl, zone, south, job, tick, null, surf); rect.push(rm);
+        if (round === 2 || rm.n < 24) break;
+        job.stage = 'orientation solve ' + (round + 1); await tick();
+        const r = await mosCameraBA(samples, job, tick, Gc, surf); if (!r) break; camRes = r; Gc = r.G;
+      }
+      if (camRes) { camRes.rect = rect; camRes.surf = surf.kind; }
+      if (camRes) {
+        mode = 'camera';
+        for (const s of samples) { const c = mosCamOf(s, s.p, camRes.G[0]); mosNodes(s, (u, v) => { const q = mosUndist(u, v, camRes.G, s.H / s.W), g = mosHit(c, q[0], q[1], surf); return g && { lat: g[0], lon: g[1], h: g[2] }; }); mosUTM(s, zone, south); }
+        obs.length = 0;
+        for (let k = 1; k < K; k++) for (const [u1, v1, u2, v2] of samples[k].pairs) { const P1 = nodeAt(samples[k - 1], u1, v1), Q1 = nodeAt(samples[k], u2, v2); if (P1 && Q1) obs.push({ k: k - 1, P: P1, Q: Q1, sig: Math.max(0.05, Math.max(samples[k - 1].gsd, samples[k].gsd)) }); }
+      }
+    }
+    if (mode === 'none' && CFG.mosReg && obs.length) { mode = 'ground';
       const n4 = 4 * K, b = 7, w = b + 1, wP = 1 / (CFG.mosSigma * CFG.mosSigma);
       // graduated Tukey weights: the window starts wide enough to pull grossly misplaced frames in, then narrows to ~2 px so
       // tie points on things above the elevation model (roofs, trees: parallax a flat mosaic cannot honour) drop out
@@ -4924,6 +5195,7 @@ async function mosBuild() {
     if (window.MOSDBG) MOS.dbg = { obs: obs.map(o => [o.k, o.P, o.Q, o.sig]), c: samples.map(s => [s.c, s.L, s.gsd]), corr };
     const corrNodes = s => { const p = corr[samples.indexOf(s)]; return s.nodes.map(X => { if (!X) return null; const d = D(s, p, X); return [X[0] + d[0], X[1] + d[1]]; }); };
 
+    for (const s of samples) s.g8 = null;
     // ---- output grid ----
     job.stage = 'rendering'; job.p = 0; await tick();
     const gsds = samples.map(s => s.gsd).sort((a, b) => a - b);
@@ -5002,7 +5274,7 @@ async function mosBuild() {
       for (let i = 0; i <= Nn; i++) push(i); for (let j = 1; j <= M; j++) push(j * (Nn + 1) + Nn); for (let i = Nn - 1; i >= 0; i--) push(M * (Nn + 1) + i); for (let j = M - 1; j >= 1; j--) push(j * (Nn + 1));
       const p = corr[k]; return { t: s.t, ring, gsd: s.gsd, matches: s.pairs.length, shift: Math.hypot(p[2], p[3]), scale: p[0] / s.L * 100, rot: Math.atan2(p[1], s.L + p[0]) * R2D };
     });
-    MOS.res = { cv, dcv, zone, south, E0, N0, g: gOut, Wo, Ho, t0, t1, frames, K, pairsOK, nObs: obs.length, before, after, reg: CFG.mosReg && obs.length > 0, limited, cover: cov * gOut * gOut, shiftMed: shifts[shifts.length >> 1], shiftMax: shifts[shifts.length - 1], hud: !!ovl, skipped, blend: CFG.mosBlend, secs: (performance.now() - T0) / 1000 };
+    MOS.res = { cv, dcv, zone, south, E0, N0, g: gOut, Wo, Ho, t0, t1, frames, K, pairsOK, nObs: obs.length, before, after, reg: mode !== 'none', mode, cam: camRes && { surf: camRes.surf, rect: camRes.rect, G: camRes.G, k1: camRes.k1, before: camRes.before, after: camRes.after, rot: camRes.rot, fov: camRes.fov, ties: camRes.n, links: camRes.links }, limited, cover: cov * gOut * gOut, shiftMed: shifts[shifts.length >> 1], shiftMax: shifts[shifts.length - 1], hud: !!ovl, skipped, blend: CFG.mosBlend, Wf: samples[0].W, Hf: samples[0].H, secs: (performance.now() - T0) / 1000 };
     MOS.job = null; buildMosPane(); dirty();
     status('Mosaic: ' + K + ' frames → ' + Wo + '×' + Ho + ' px at ' + fx(gOut, 2) + ' m');
   } catch (e) {
@@ -5082,7 +5354,9 @@ function buildMosPane() {
       h('label', null, 'New frame when view moves (fraction of width)'), num('mosMove', 0.05, 0.02, 0.1),
       h('label', null, 'At least one frame every s'), num('mosGap', 0.5, 0.2, 2),
       h('label', null, 'Register frames by image matching'), h('input', { type: 'checkbox', checked: CFG.mosReg, onchange: e => { CFG.mosReg = e.target.checked; } }),
-      h('label', null, 'Metadata trusted to ± m'), num('mosSigma', 1, 0.5, 15),
+      h('label', null, 'Solve camera orientation (photogrammetric)'), h('input', { type: 'checkbox', checked: CFG.mosCam, onchange: e => { CFG.mosCam = e.target.checked; } }),
+      h('label', null, 'Pointing trusted to ± °'), num('mosSigA', 0.1, 0.05, 1),
+      h('label', null, 'Corner-only frames: trusted to ± m'), num('mosSigma', 1, 0.5, 15),
       h('label', null, 'Blend'), h('select', { onchange: e => { CFG.mosBlend = e.target.value; } }, [['soft', 'soft seams (centre-weighted)'], ['best', 'sharpest frame only'], ['average', 'average (smoothest, ghosts movers)']].map(([v, l]) => h('option', { value: v, selected: CFG.mosBlend === v }, l))),
       h('label', null, 'Output resolution × frame GSD'), num('mosGsdK', 0.25, 0.25, 1),
       h('label', null, 'Max output size px'), num('mosMax', 256, 256, 3072),
@@ -5091,14 +5365,17 @@ function buildMosPane() {
     h('div', { class: 'btns' },
       J ? h('button', { onclick: () => { J.cancel = true; } }, '■ Cancel') : h('button', { style: 'border-color:var(--acc);color:var(--acc)', disabled: !S.playable || !S.track, onclick: mosBuild }, '▦ Build mosaic'),
       R ? h('button', { onclick: mosFit }, 'Zoom map to mosaic') : ''),
-    J ? h('div', { class: 'note' }, ({ 'masking overlay': 'Finding burned-in symbology… ', 'collecting frames': 'Choosing and matching frames… ' + (J.n || 0) + ' frames · ', registering: 'Registering frames… ', rendering: 'Stitching… ' }[J.stage] || '') + Math.round(J.p * 100) + '%') : '');
+    J ? h('div', { class: 'note' }, ({ 'masking overlay': 'Finding burned-in symbology… ', 'collecting frames': 'Choosing and matching frames… ' + (J.n || 0) + ' frames · ', registering: 'Registering frames… ', rendering: 'Stitching… ' }[J.stage] || (J.stage ? J.stage[0].toUpperCase() + J.stage.slice(1) + '… ' : '')) + Math.round(J.p * 100) + '%') : '');
   if (!R) return;
   const rows = [['Frames', R.K + ' · ' + tcOf(R.t0) + ' → ' + tcOf(R.t1) + (R.skipped ? ' (' + R.skipped + ' without ground geometry skipped)' : '')],
     ['Output', R.Wo.toLocaleString() + ' × ' + R.Ho.toLocaleString() + ' px at ' + fx(R.g, 2) + ' m' + (R.limited ? ' (coarsened to fit the size limit)' : '') + ' · UTM ' + R.zone + (R.south ? 'S' : 'N') + ' (EPSG:' + UTM.epsg(R.zone, R.south) + ')'],
     ['Covered', R.cover > 1e6 ? fx(R.cover / 1e6, 2) + ' km²' : fx(R.cover / 1e4, 1) + ' ha'],
     ['Matching', R.pairsOK + ' of ' + Math.max(0, R.K - 1) + ' frame pairs matched · ' + R.nObs.toLocaleString() + ' tie points'],
+    ...(R.cam && R.cam.rect ? [['Rectified-frame misfit', R.cam.rect.map((r, i) => (i === 0 ? 'metadata ' : 'pass ' + i + ' ') + (r.med == null ? '–' : fx(r.med, 2) + ' m median / ' + fx(r.p90, 2) + ' m p90')).join(' → ') + ' (' + R.cam.rect[R.cam.rect.length - 1].n.toLocaleString() + ' ties at ' + fx(R.cam.rect[0].gm, 2) + ' m)']] : []),
+    ...(R.cam && R.cam.surf ? [['Ground surface', R.cam.surf]] : []),
+    ...(R.cam ? [['Orientation solve', R.cam.ties.toLocaleString() + ' tie points over ' + R.cam.links + ' frame links · reprojection median ' + fx(R.cam.before.med, 2) + ' → ' + fx(R.cam.after.med, 2) + ' px, 90th percentile ' + fx(R.cam.before.p90, 1) + ' → ' + fx(R.cam.after.p90, 1) + ' px'], ['Camera calibration', 'focal setting ' + fx((Math.exp(R.cam.G[0]) - 1) * 100, 2) + '% · radial k1 ' + fx(R.cam.G[1], 4) + ', k2 ' + fx(R.cam.G[2], 4)], ['Interior orientation', 'principal point offset ' + fx(R.cam.G[3] * R.Wf / 2, 1) + ', ' + fx(R.cam.G[4] * R.Hf / 2, 1) + ' px'], ['Exterior orientation', 'per frame: pointing ' + fx(R.cam.rot, 3) + '° RMS · focal ' + fx(R.cam.fov, 2) + '% RMS about the mean']] : []),
     ['Seam misfit', R.nObs ? 'metadata only ' + fx(R.before.med, 2) + ' m median (' + fx(R.before.medPx, 1) + ' px)' + (R.reg ? ' → registered ' + fx(R.after.med, 2) + ' m (' + fx(R.after.medPx, 1) + ' px)' : '') : 'no tie points'],
-    ['Frame corrections', R.reg ? 'shift median ' + fx(R.shiftMed, 1) + ' m, max ' + fx(R.shiftMax, 1) + ' m' : 'none (metadata placement)'],
+    ['Frame corrections', R.mode === 'camera' ? 'camera orientation per frame (see above)' : R.reg ? 'shift median ' + fx(R.shiftMed, 1) + ' m, max ' + fx(R.shiftMax, 1) + ' m' : 'none (metadata placement)'],
     ['Symbology', R.hud ? 'detected and left out where covered' : 'none detected / off'],
     ['Built in', fx(R.secs, 1) + ' s']];
   p.append(h('table', null, rows.map(([k, v]) => h('tr', null, h('td', { class: 'k' }, k), h('td', null, v)))),
