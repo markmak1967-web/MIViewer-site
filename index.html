@@ -217,7 +217,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.10.0', build: 17 };
+const BUILD = { ver: 'R0.11.0', build: 18 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -4736,7 +4736,7 @@ function buildSfmPane() {
    Output: map overlay, GeoTIFF (UTM, RGBA), PNG + world file + .prj, frame footprints.
    ===================================================================== */
 const MOS = { job: null, res: null };
-Object.assign(CFG, { mosMove: 0.1, mosGap: 2, mosStep: 2, mosReg: true, mosSigma: 15, mosBlend: 'soft', mosGsdK: 1, mosMax: 3072, mosHud: true, mosMesh: 16, mosMap: true, mosAlpha: 1, mosMovers: true, mosCam: true, mosSigA: 1, mosSigF: 0.5 });
+Object.assign(CFG, { mosMove: 0.1, mosGap: 2, mosStep: 2, mosReg: true, mosSigma: 15, mosBlend: 'soft', mosGsdK: 1, mosMax: 3072, mosHud: true, mosMesh: 16, mosMap: true, mosAlpha: 1, mosMovers: true, mosCam: true, mosSigA: 1, mosSigF: 0.5, mosRef: true, mosRefSig: 1, mosRefPos: false });
 
 /* ---------- UTM (Krüger series, WGS84; sub-millimetre within the zone) ---------- */
 const UTM = (() => {
@@ -4823,15 +4823,16 @@ function mosUndist(u, v, G, asp) {
    model, else the flat reference) and reprojected into frame b; residuals are image pixels, both directions.
    Normal equations: banded per-frame blocks (links to the previous 2 frames) + a rank-4 mean constraint (Woodbury) +
    a border for the 5 shared parameters (Schur). Levenberg–Marquardt on a graduated Tukey cost. */
-async function mosCameraBA(samples, job, tick, G0, surf) {
-  const K = samples.length, W = samples[0].W, H = samples[0].H, asp = H / W, NP = 4 * K, NG = 5;
+async function mosCameraBA(samples, job, tick, G0, surf, ctrl) {
+  const K = samples.length, W = samples[0].W, H = samples[0].H, asp = H / W, NP = 4 * K, NG = 7; // G = [lnF, k1, k2, cx, cy, tE, tN]
+  const CF_ = (ctrl || []).filter(c => !c.check), useC = CF_.length >= 30, sigR = CFG.mosRefSig;
   const ties = [];
   samples.forEach((s, k) => { for (const L of s.links) for (const q of L.pairs) { ties.push({ a: L.j, b: k, ua: q[0], va: q[1], ub: q[2], vb: q[3] }); ties.push({ a: k, b: L.j, ua: q[2], va: q[3], ub: q[0], vb: q[1] }); } });
   if (ties.length < 24) return null;
   for (const s of samples) if (!s.p) s.p = [0, 0, 0, 0];
-  let G = G0 ? G0.slice() : [0, 0, 0, 0, 0];
-  const DL = [1e-3, 1e-3, 1e-3, 1e-4], DG = [1e-4, 1e-4, 1e-4, 1e-5, 1e-5];
-  const sigA = CFG.mosSigA, PRI = [1 / sigA ** 2, 1 / sigA ** 2, 1 / sigA ** 2, 1 / 0.01 ** 2], PRG = [1 / (CFG.mosSigF / 100) ** 2, 1 / 0.2 ** 2, 1 / 0.2 ** 2, 1 / 0.005 ** 2, 1 / 0.005 ** 2];
+  let G = [0, 0, 0, 0, 0, 0, 0]; if (G0) G0.forEach((x, i) => { G[i] = x; });
+  const DL = [1e-3, 1e-3, 1e-3, 1e-4], DG = [1e-4, 1e-4, 1e-4, 1e-5, 1e-5, 1e-2, 1e-2];
+  const sigA = CFG.mosSigA, PRI = [1 / sigA ** 2, 1 / sigA ** 2, 1 / sigA ** 2, 1 / 0.01 ** 2], PRG = useC ? [1 / 0.05 ** 2, 1 / 0.2 ** 2, 1 / 0.2 ** 2, 1 / 0.03 ** 2, 1 / 0.03 ** 2, 1e-8, 1e-8] : [1 / (CFG.mosSigF / 100) ** 2, 1 / 0.2 ** 2, 1 / 0.2 ** 2, 1 / 0.005 ** 2, 1 / 0.005 ** 2, 1e6, 1e6];
   const cam = (s, p, lnF) => { const st = stCorr(s.st, [p[0], p[1], p[2], p[3] + lnF]), R = sensorRot(st); return { st, R, th: Math.tan(st.hfov * D2R / 2), tv: Math.tan(vfovOf(st) * D2R / 2), alt: sensAltMSL(st), mLat: mpdLat(st.sensLat), mLon: mpdLon(st.sensLat) }; };
   const ground = (c, u, v, h) => {
     const d = norm3(mv3(c.R, [1, u * c.th, v * c.tv])); if (d[2] <= 1e-6) return null;
@@ -4848,10 +4849,25 @@ async function mosCameraBA(samples, job, tick, G0, surf) {
   };
   const rho = (m, c) => m >= c ? c * c / 6 : c * c / 6 * (1 - (1 - (m / c) ** 2) ** 3);
   const cams = (P, g) => samples.map((s, k) => cam(s, P[k], g[0]));
-  const cost = (P, g, cc) => { const C = cams(P, g); let e = 0; for (const T of ties) { const r = resOf(T, C[T.a], C[T.b], g); e += r ? rho(Math.hypot(r[0], r[1]), cc) : cc * cc / 6; } for (let k = 0; k < K; k++) for (let q = 0; q < 4; q++) e += 0.5 * PRI[q] * P[k][q] ** 2; for (let q = 0; q < NG; q++) e += 0.5 * PRG[q] * g[q] ** 2; return e; };
+  // basemap control (shape only): the reference point, moved by the shared free offset t, reprojected into the frame
+  const resC = (c, ca, g) => {
+    const mLa = mpdLat(c.lat), mLo = mpdLon(c.lat), lat = c.lat + g[6] / mLa, lon = c.lon + g[5] / mLo, hh = surf(lat, lon);
+    const pb = worldToImage(ca.st, ca.R, lat, lon, hh); if (!pb) return null; const q = mosUndist(c.u, c.v, g, asp);
+    return [(pb[0] - q[0]) * W / 2, (pb[1] - q[1]) * H / 2];
+  };
+  const mOf = (c, r) => Math.hypot(r[0], r[1]) * samples[c.k].gsd; // residual in ground metres
+  const ctrlStats = (list) => { const C = cams(samples.map(s => s.p), G), e = []; for (const c of list) { const r = resC(c, C[c.k], G); if (r) e.push(mOf(c, r)); } e.sort((x, y) => x - y); return e.length ? { med: e[e.length >> 1], p90: e[Math.floor(e.length * 0.9)], n: e.length } : null; };
+  if (useC && !G[5] && !G[6]) { // start the free offset at the median basemap–metadata offset
+    const C = cams(samples.map(s => s.p), G), dE = [], dN = [];
+    for (const c of CF_) { const q = mosUndist(c.u, c.v, G, asp), g = mosHit(C[c.k], q[0], q[1], surf); if (g) { dN.push((g[0] - c.lat) * mpdLat(c.lat)); dE.push((g[1] - c.lon) * mpdLon(c.lat)); } }
+    const md = a => a.sort((x, y) => x - y)[a.length >> 1]; if (dE.length) { G[5] = md(dE); G[6] = md(dN); }
+  }
+  let ccC = 0;
+  const cost = (P, g, cc) => { const C = cams(P, g); let e = 0; for (const T of ties) { const r = resOf(T, C[T.a], C[T.b], g); e += r ? rho(Math.hypot(r[0], r[1]), cc) : cc * cc / 6; } if (useC) for (const c of CF_) { const r = resC(c, C[c.k], g); e += (r ? rho(mOf(c, r), ccC) : ccC * ccC / 6) / (sigR * sigR); } for (let k = 0; k < K; k++) for (let q = 0; q < 4; q++) e += 0.5 * PRI[q] * P[k][q] ** 2; for (let q = 0; q < NG; q++) e += 0.5 * PRG[q] * g[q] ** 2; return e; };
   const stats = () => { const e = [], C = cams(samples.map(s => s.p), G); for (const T of ties) { const r = resOf(T, C[T.a], C[T.b], G); if (r) e.push(Math.hypot(r[0], r[1])); } e.sort((x, y) => x - y); return { med: e[e.length >> 1], p90: e[Math.floor(e.length * 0.9)], n: e.length }; };
   const before = stats();
   const B = 11, w = B + 1, WM = 1e8; let cc = Math.max(2, 3 * before.med), lam = 1e-2, it = 0;
+  const cBefore = useC ? ctrlStats(CF_) : null, kBefore = useC ? ctrlStats(ctrl.filter(c => c.check)) : null; if (useC) ccC = Math.max(2 * sigR, 3 * cBefore.med);
   while (it < 25) {
     const P0 = samples.map(s => s.p), C0 = cams(P0, G), CV = samples.map((s, k) => [0, 1, 2, 3].map(q => { const p = P0[k].slice(); p[q] += DL[q]; return cam(s, p, G[0]); })), CF = samples.map((s, k) => cam(s, P0[k], G[0] + DG[0]));
     const A = new Float64Array(NP * w), g = new Float64Array(NP), Cb = [...Array(NG)].map(() => new Float64Array(NP)), D = [...Array(NG)].map(() => new Float64Array(NG)), h = new Float64Array(NG);
@@ -4862,11 +4878,25 @@ async function mosCameraBA(samples, job, tick, G0, surf) {
       for (let q = 0; q < 4; q++) J.push(d(resOf(T, CV[T.a][q], C0[T.b], G), DL[q]));
       for (let q = 0; q < 4; q++) J.push(d(resOf(T, C0[T.a], CV[T.b][q], G), DL[q]));
       JG.push(d(resOf(T, CF[T.a], CF[T.b], G), DG[0]));
-      for (let q = 1; q < NG; q++) { const g2 = G.slice(); g2[q] += DG[q]; JG.push(d(resOf(T, C0[T.a], C0[T.b], g2), DG[q])); }
+      for (let q = 1; q < NG; q++) { if (q >= 5) { JG.push([0, 0]); continue; } const g2 = G.slice(); g2[q] += DG[q]; JG.push(d(resOf(T, C0[T.a], C0[T.b], g2), DG[q])); }
       const idx = [4 * T.a, 4 * T.a + 1, 4 * T.a + 2, 4 * T.a + 3, 4 * T.b, 4 * T.b + 1, 4 * T.b + 2, 4 * T.b + 3];
       for (let i = 0; i < 8; i++) {
         const Ji = J[i], a = idx[i]; g[a] -= wt * (Ji[0] * r0[0] + Ji[1] * r0[1]);
         for (let j = 0; j < 8; j++) { const b = idx[j]; if (b >= a) A[a * w + (b - a)] += wt * (Ji[0] * J[j][0] + Ji[1] * J[j][1]); }
+        for (let q = 0; q < NG; q++) Cb[q][a] += wt * (Ji[0] * JG[q][0] + Ji[1] * JG[q][1]);
+      }
+      for (let q = 0; q < NG; q++) { h[q] -= wt * (JG[q][0] * r0[0] + JG[q][1] * r0[1]); for (let q2 = 0; q2 < NG; q2++) D[q][q2] += wt * (JG[q][0] * JG[q2][0] + JG[q][1] * JG[q2][1]); }
+    }
+    if (useC) for (const c of CF_) {
+      const r0 = resC(c, C0[c.k], G); if (!r0) continue; const m = mOf(c, r0); if (m >= ccC) continue;
+      const tw = 1 - (m / ccC) ** 2, wt = tw * tw * (samples[c.k].gsd / sigR) ** 2;
+      const d = (r, dl) => r ? [(r[0] - r0[0]) / dl, (r[1] - r0[1]) / dl] : [0, 0], J = [], JG = [];
+      for (let q = 0; q < 4; q++) J.push(d(resC(c, CV[c.k][q], G), DL[q]));
+      JG.push(d(resC(c, CF[c.k], G), DG[0]));
+      for (let q = 1; q < NG; q++) { const g2 = G.slice(); g2[q] += DG[q]; JG.push(d(resC(c, C0[c.k], g2), DG[q])); }
+      for (let i = 0; i < 4; i++) {
+        const a = 4 * c.k + i, Ji = J[i]; g[a] -= wt * (Ji[0] * r0[0] + Ji[1] * r0[1]);
+        for (let j = i; j < 4; j++) A[a * w + (j - i)] += wt * (Ji[0] * J[j][0] + Ji[1] * J[j][1]);
         for (let q = 0; q < NG; q++) Cb[q][a] += wt * (Ji[0] * JG[q][0] + Ji[1] * JG[q][1]);
       }
       for (let q = 0; q < NG; q++) { h[q] -= wt * (JG[q][0] * r0[0] + JG[q][1] * r0[1]); for (let q2 = 0; q2 < NG; q2++) D[q][q2] += wt * (JG[q][0] * JG[q2][0] + JG[q][1] * JG[q2][1]); }
@@ -4883,11 +4913,11 @@ async function mosCameraBA(samples, job, tick, G0, surf) {
       const mean = v => [0, 1, 2, 3].map(q => { let s2 = 0; for (let k = 0; k < K; k++) s2 += v[4 * k + q] / K; return s2; });
       const Z = [0, 1, 2, 3].map(q => { const u = new Float64Array(NP); for (let k = 0; k < K; k++) u[4 * k + q] = 1 / K; return sol(u); });
       const Mz = [0, 1, 2, 3].map(r => { const m2 = mean(Z[r]); return m2.map((x, c) => x + (r === c ? 1 / WM : 0)); });
-      const solW = v => { const y = sol(v), cf = solveLin([0, 1, 2, 3].map(r => [0, 1, 2, 3].map(c => Mz[c][r])), mean(y)); if (!cf) return y; return y.map((x, i) => x - Z.reduce((s2, z, q) => s2 + z[i] * cf[q], 0)); };
+      const solW = v => { const y = sol(v); if (useC) return y; const cf = solveLin([0, 1, 2, 3].map(r => [0, 1, 2, 3].map(c => Mz[c][r])), mean(y)); if (!cf) return y; return y.map((x, i) => x - Z.reduce((s2, z, q) => s2 + z[i] * cf[q], 0)); };
       const X = Cb.map(c => solW(c)), Yg = solW(g);
       const Sm = Dd.map((row, i) => row.map((x, j) => { let s2 = 0; for (let n = 0; n < NP; n++) s2 += Cb[i][n] * X[j][n]; return x - s2; }));
       const rh = [...h].map((x, i) => { let s2 = 0; for (let n = 0; n < NP; n++) s2 += Cb[i][n] * Yg[n]; return x - s2; });
-      const dG = solveLin(Sm, rh) || [0, 0, 0, 0, 0];
+      const dG = solveLin(Sm, rh) || new Array(NG).fill(0);
       const dx = Yg.map((x, n) => x - X.reduce((s2, Xi, q) => s2 + Xi[n] * dG[q], 0));
       const P1 = P0.map((p, k) => p.map((x, q) => x + dx[4 * k + q])), G1 = G.map((x, q) => x + dG[q]);
       G1[1] = clamp(G1[1], -0.5, 0.5); G1[2] = clamp(G1[2], -0.5, 0.5);
@@ -4899,11 +4929,13 @@ async function mosCameraBA(samples, job, tick, G0, surf) {
     if (window.MOSDBG) (MOS.baLog = MOS.baLog || []).push({ it, cc, lam, acc: accepted, ...stats() });
     { const C = cams(samples.map(s => s.p), G); for (const T of ties) { const r = resOf(T, C[T.a], C[T.b], G); if (r) T.h = surf(r[2][0], r[2][1]); } }
     job.p = Math.min(1, it / 20); await tick();
+    if (useC) ccC = Math.max(2 * sigR, ccC * 0.6);
     if (cc > 2) cc = Math.max(2, cc * 0.6); else if (!accepted || lam > 1e3) break;
   }
   const after = stats();
   const rot = Math.sqrt(samples.reduce((a, s) => a + s.p[0] ** 2 + s.p[1] ** 2 + s.p[2] ** 2, 0) / (3 * K)), fov = Math.sqrt(samples.reduce((a, s) => a + s.p[3] ** 2, 0) / K) * 100;
-  return { G, k1: G[1], before, after, rot, fov, n: ties.length / 2, links: samples.reduce((a, s) => a + s.links.length, 0) };
+  const ctrl2 = useC ? { fitBefore: cBefore, fit: ctrlStats(CF_), check: ctrlStats(ctrl.filter(c => c.check)), checkBefore: kBefore, t: [G[5], G[6]], n: CF_.length } : null;
+  return { G, k1: G[1], before, after, rot, fov, ctrl: ctrl2, n: ties.length / 2, links: samples.reduce((a, s) => a + s.links.length, 0) };
 }
 
 
@@ -5036,6 +5068,64 @@ async function mosRectMatch(samples, G, ovl, zone, south, job, tick, label, surf
   return { n, gm, med: mis.length ? mis[mis.length >> 1] : null, p90: mis.length ? mis[Math.floor(mis.length * 0.9)] : null, links: samples.reduce((a, s) => a + s.links.length, 0) };
 }
 
+
+/* ---------- basemap as the shape reference ----------
+   Tiles of the current basemap over the mosaic, read as pixels (needs CORS), sampled as grey on the same UTM grid as a
+   rectified frame. Matches between each rectified frame and the basemap become control for the orientation solve with
+   one free shared offset, so the basemap corrects the mosaic's shape (scale, rotation, drift along a strip) and the
+   position stays with the metadata unless asked otherwise. MOS.refProvider can replace the tile source (tests). */
+async function mosRef(bb, res) {
+  if (MOS.refProvider) return MOS.refProvider(bb, res);
+  const src = MapV.src(); if (!src.url) return { err: 'no basemap selected' };
+  const latc = (bb[0] + bb[2]) / 2, mpp0 = 156543.03392 * Math.cos(latc * D2R);
+  let z = clamp(Math.ceil(Math.log2(mpp0 / Math.max(res, 0.05))), 1, src.max || 19);
+  const tx = (lon, z) => (lon + 180) / 360 * (1 << z), ty = (lat, z) => (1 - Math.log(Math.tan(lat * D2R) + 1 / Math.cos(lat * D2R)) / Math.PI) / 2 * (1 << z);
+  let X0, X1, Y0, Y1;
+  for (;;) { X0 = Math.floor(tx(bb[1], z)); X1 = Math.floor(tx(bb[3], z)); Y0 = Math.floor(ty(bb[2], z)); Y1 = Math.floor(ty(bb[0], z)); if ((X1 - X0 + 1) * (Y1 - Y0 + 1) <= 400 || z <= 10) break; z--; }
+  const tiles = new Map(), cv = document.createElement('canvas'); cv.width = cv.height = 256; const cx = cv.getContext('2d', { willReadFrequently: true });
+  let bad = 0, tainted = 0;
+  const load = (x, y) => new Promise(res2 => { const im = new Image(); im.crossOrigin = 'anonymous'; im.onload = () => { try { cx.clearRect(0, 0, 256, 256); cx.drawImage(im, 0, 0, 256, 256); const d = cx.getImageData(0, 0, 256, 256).data, g = new Uint8ClampedArray(65536); for (let i = 0, j = 0; i < 65536; i++, j += 4) g[i] = 0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]; tiles.set(x + ',' + y, g); } catch (e) { tainted++; } res2(); }; im.onerror = () => { bad++; res2(); };
+    im.src = src.url.replace('{z}', z).replace('{x}', x).replace('{y}', y).replace('{s}', 'abc'[(x + y) % 3]); });
+  const jobs = []; for (let y = Y0; y <= Y1; y++) for (let x = X0; x <= X1; x++) jobs.push([x, y]);
+  for (let i = 0; i < jobs.length; i += 12) await Promise.all(jobs.slice(i, i + 12).map(([x, y]) => load(x, y)));
+  if (!tiles.size) return { err: tainted ? 'the basemap does not allow its pixels to be read (CORS)' : 'basemap tiles could not be loaded (offline?)' };
+  const S2 = 1 << z;
+  const sample = (lat, lon) => { const fx = tx(lon, z) * 256, fy = ty(lat, z) * 256, X = Math.floor(fx / 256), Y = Math.floor(fy / 256), t = tiles.get(X + ',' + Y); if (!t) return null;
+    const px = Math.min(254.999, Math.max(0, fx - X * 256 - 0.5)), py = Math.min(254.999, Math.max(0, fy - Y * 256 - 0.5)), ix = px | 0, iy = py | 0, ax = px - ix, ay = py - iy, k = iy * 256 + ix;
+    return (t[k] * (1 - ax) + t[k + 1] * ax) * (1 - ay) + (t[k + 256] * (1 - ax) + t[k + 257] * ax) * ay; };
+  return { sample, res: 156543.03392 * Math.cos(latc * D2R) / S2, z, name: src.attr || CFG.basemap, tiles: tiles.size, missing: bad + tainted };
+}
+function mosRefTile(T, grid, zone, south, ref) {
+  const { x0, y0, w, h } = T, S8 = 8, lw = Math.ceil(w / S8) + 2, lh = Math.ceil(h / S8) + 2, LA = new Float64Array(lw * lh), LO = new Float64Array(lw * lh), g = grid.g;
+  for (let j = 0; j < lh; j++) for (let i = 0; i < lw; i++) { const [la, lo] = UTM.inv(grid.E0 + (x0 + i * S8 + 0.5) * g, grid.N0 - (y0 + j * S8 + 0.5) * g, zone, south); LA[j * lw + i] = la; LO[j * lw + i] = lo; }
+  const d = new Float32Array(w * h), ok = new Uint8Array(w * h); let sm = 0, n = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const fx = x / S8, fy = y / S8, i = fx | 0, j = fy | 0, a = fx - i, b = fy - j, k = j * lw + i;
+    const la = (LA[k] * (1 - a) + LA[k + 1] * a) * (1 - b) + (LA[k + lw] * (1 - a) + LA[k + lw + 1] * a) * b, lo = (LO[k] * (1 - a) + LO[k + 1] * a) * (1 - b) + (LO[k + lw] * (1 - a) + LO[k + lw + 1] * a) * b;
+    const v = ref.sample(la, lo); if (v === null) continue; d[y * w + x] = v; ok[y * w + x] = 1; sm += v; n++;
+  }
+  if (n < 1000) return null; const mu = sm / n; for (let i = 0; i < w * h; i++) if (!ok[i]) d[i] = mu;
+  const inn = new Uint8Array(w * h), R = 4; for (let y = R; y < h - R; y++) for (let x = R; x < w - R; x++) { const k = y * w + x; if (ok[k] && ok[k - R] && ok[k + R] && ok[k - R * w] && ok[k + R * w]) inn[k] = 1; }
+  return { x0, y0, w, h, P: mosPyr(d, w, h), inn, obsAt: null };
+}
+async function mosRefControl(samples, G, ovl, zone, south, surf, job, tick) {
+  const ll = samples.flatMap(s => s.ll.filter(Boolean)), bb = [Math.min(...ll.map(q => q[0])), Math.min(...ll.map(q => q[1])), Math.max(...ll.map(q => q[0])), Math.max(...ll.map(q => q[1]))];
+  const gs = samples.map(s => s.gsd).sort((a, b) => a - b), gm = gs[gs.length >> 1];
+  const ref = await mosRef(bb, gm); if (!ref || ref.err) return { err: ref ? ref.err : 'no reference' };
+  const gR = Math.max(gm, ref.res);
+  const all = samples.flatMap(s => s.nodes.filter(Boolean)), grid = { g: gR, E0: Math.floor((Math.min(...all.map(p => p[0])) - 1000) / gR) * gR, N0: Math.ceil((Math.max(...all.map(p => p[1])) + 1000) / gR) * gR };
+  const ctrl = []; let nF = 0, q = 0;
+  for (let k = 0; k < samples.length; k++) {
+    if (job.cancel) throw new Error('cancelled');
+    const s = samples[k], T = mosRectTile(s, G, grid, zone, south, 1200, surf); if (!T || T.P.length < 4) continue;
+    const Rt = mosRefTile(T, grid, zone, south, ref); if (!Rt || Rt.P.length < 4) continue;
+    const m = mosMatchTiles(T, Rt, ovl, s, 200); if (!m) continue; nF++;
+    for (const e of m.inl) { const o = T.obsAt(e.p[0], e.p[1]); if (!o) continue; const [la, lo] = UTM.inv(grid.E0 + (Rt.x0 + e.q[0] + 0.5) * gR, grid.N0 - (Rt.y0 + e.q[1] + 0.5) * gR, zone, south); ctrl.push({ k, u: o[0], v: o[1], lat: la, lon: lo, check: (q++ % 5) === 4 }); }
+    job.p = (k + 1) / samples.length; if (k % 2 === 1) await tick();
+  }
+  return { ctrl, ref: { name: ref.name, res: ref.res, z: ref.z, tiles: ref.tiles }, frames: nF, gR };
+}
+
 /* ---------- build ---------- */
 function mosRange() {
   const clip = isNum(S.inT) && isNum(S.outT) && S.outT > S.inT;
@@ -5146,10 +5236,23 @@ async function mosBuild() {
         job.stage = 'orientation solve ' + (round + 1); await tick();
         const r = await mosCameraBA(samples, job, tick, Gc, surf); if (!r) break; camRes = r; Gc = r.G;
       }
-      if (camRes) { camRes.rect = rect; camRes.surf = surf.kind; }
+      // after the stitch: the basemap as the shape reference (control with a free shared offset), then one more solve
+      let refInfo = null;
+      if (camRes && CFG.mosRef) {
+        job.stage = 'matching to the basemap'; await tick();
+        const rc = await mosRefControl(samples, Gc, ovl, zone, south, surf, job, tick);
+        if (rc.err) refInfo = { err: rc.err };
+        else if (rc.ctrl.filter(c => !c.check).length < 30) refInfo = { err: 'too few matches with the basemap (' + rc.ctrl.length + ')', ref: rc.ref };
+        else {
+          job.stage = 'orientation solve with basemap shape'; await tick();
+          const r = await mosCameraBA(samples, job, tick, Gc, surf, rc.ctrl);
+          if (r) { camRes = r; Gc = r.G; refInfo = { ...r.ctrl, ref: rc.ref, frames: rc.frames, gR: rc.gR }; }
+        }
+      }
+      if (camRes) { camRes.rect = rect; camRes.surf = surf.kind; camRes.refInfo = refInfo; }
       if (camRes) {
         mode = 'camera';
-        for (const s of samples) { const c = mosCamOf(s, s.p, camRes.G[0]); mosNodes(s, (u, v) => { const q = mosUndist(u, v, camRes.G, s.H / s.W), g = mosHit(c, q[0], q[1], surf); return g && { lat: g[0], lon: g[1], h: g[2] }; }); mosUTM(s, zone, south); }
+        for (const s of samples) { const c = mosCamOf(s, s.p, camRes.G[0]); mosNodes(s, (u, v) => { const q = mosUndist(u, v, camRes.G, s.H / s.W), g = mosHit(c, q[0], q[1], surf); if (!g) return null; if (CFG.mosRefPos && camRes.refInfo && camRes.refInfo.t) return { lat: g[0] - camRes.refInfo.t[1] / mpdLat(g[0]), lon: g[1] - camRes.refInfo.t[0] / mpdLon(g[0]), h: g[2] }; return { lat: g[0], lon: g[1], h: g[2] }; }); mosUTM(s, zone, south); }
         obs.length = 0;
         for (let k = 1; k < K; k++) for (const [u1, v1, u2, v2] of samples[k].pairs) { const P1 = nodeAt(samples[k - 1], u1, v1), Q1 = nodeAt(samples[k], u2, v2); if (P1 && Q1) obs.push({ k: k - 1, P: P1, Q: Q1, sig: Math.max(0.05, Math.max(samples[k - 1].gsd, samples[k].gsd)) }); }
       }
@@ -5274,7 +5377,7 @@ async function mosBuild() {
       for (let i = 0; i <= Nn; i++) push(i); for (let j = 1; j <= M; j++) push(j * (Nn + 1) + Nn); for (let i = Nn - 1; i >= 0; i--) push(M * (Nn + 1) + i); for (let j = M - 1; j >= 1; j--) push(j * (Nn + 1));
       const p = corr[k]; return { t: s.t, ring, gsd: s.gsd, matches: s.pairs.length, shift: Math.hypot(p[2], p[3]), scale: p[0] / s.L * 100, rot: Math.atan2(p[1], s.L + p[0]) * R2D };
     });
-    MOS.res = { cv, dcv, zone, south, E0, N0, g: gOut, Wo, Ho, t0, t1, frames, K, pairsOK, nObs: obs.length, before, after, reg: mode !== 'none', mode, cam: camRes && { surf: camRes.surf, rect: camRes.rect, G: camRes.G, k1: camRes.k1, before: camRes.before, after: camRes.after, rot: camRes.rot, fov: camRes.fov, ties: camRes.n, links: camRes.links }, limited, cover: cov * gOut * gOut, shiftMed: shifts[shifts.length >> 1], shiftMax: shifts[shifts.length - 1], hud: !!ovl, skipped, blend: CFG.mosBlend, Wf: samples[0].W, Hf: samples[0].H, secs: (performance.now() - T0) / 1000 };
+    MOS.res = { cv, dcv, zone, south, E0, N0, g: gOut, Wo, Ho, t0, t1, frames, K, pairsOK, nObs: obs.length, before, after, reg: mode !== 'none', mode, cam: camRes && { refInfo: camRes.refInfo, surf: camRes.surf, rect: camRes.rect, G: camRes.G, k1: camRes.k1, before: camRes.before, after: camRes.after, rot: camRes.rot, fov: camRes.fov, ties: camRes.n, links: camRes.links }, limited, cover: cov * gOut * gOut, shiftMed: shifts[shifts.length >> 1], shiftMax: shifts[shifts.length - 1], hud: !!ovl, skipped, blend: CFG.mosBlend, Wf: samples[0].W, Hf: samples[0].H, secs: (performance.now() - T0) / 1000 };
     MOS.job = null; buildMosPane(); dirty();
     status('Mosaic: ' + K + ' frames → ' + Wo + '×' + Ho + ' px at ' + fx(gOut, 2) + ' m');
   } catch (e) {
@@ -5356,6 +5459,9 @@ function buildMosPane() {
       h('label', null, 'Register frames by image matching'), h('input', { type: 'checkbox', checked: CFG.mosReg, onchange: e => { CFG.mosReg = e.target.checked; } }),
       h('label', null, 'Solve camera orientation (photogrammetric)'), h('input', { type: 'checkbox', checked: CFG.mosCam, onchange: e => { CFG.mosCam = e.target.checked; } }),
       h('label', null, 'Pointing trusted to ± °'), num('mosSigA', 0.1, 0.05, 1),
+      h('label', null, 'Rectify shape to the basemap'), h('input', { type: 'checkbox', checked: CFG.mosRef, onchange: e => { CFG.mosRef = e.target.checked; } }),
+      h('label', null, 'Basemap shape trusted to ± m'), num('mosRefSig', 0.25, 0.25, 1),
+      h('label', null, 'Also take position from the basemap'), h('input', { type: 'checkbox', checked: CFG.mosRefPos, onchange: e => { CFG.mosRefPos = e.target.checked; } }),
       h('label', null, 'Corner-only frames: trusted to ± m'), num('mosSigma', 1, 0.5, 15),
       h('label', null, 'Blend'), h('select', { onchange: e => { CFG.mosBlend = e.target.value; } }, [['soft', 'soft seams (centre-weighted)'], ['best', 'sharpest frame only'], ['average', 'average (smoothest, ghosts movers)']].map(([v, l]) => h('option', { value: v, selected: CFG.mosBlend === v }, l))),
       h('label', null, 'Output resolution × frame GSD'), num('mosGsdK', 0.25, 0.25, 1),
@@ -5373,6 +5479,7 @@ function buildMosPane() {
     ['Matching', R.pairsOK + ' of ' + Math.max(0, R.K - 1) + ' frame pairs matched · ' + R.nObs.toLocaleString() + ' tie points'],
     ...(R.cam && R.cam.rect ? [['Rectified-frame misfit', R.cam.rect.map((r, i) => (i === 0 ? 'metadata ' : 'pass ' + i + ' ') + (r.med == null ? '–' : fx(r.med, 2) + ' m median / ' + fx(r.p90, 2) + ' m p90')).join(' → ') + ' (' + R.cam.rect[R.cam.rect.length - 1].n.toLocaleString() + ' ties at ' + fx(R.cam.rect[0].gm, 2) + ' m)']] : []),
     ...(R.cam && R.cam.surf ? [['Ground surface', R.cam.surf]] : []),
+    ...(R.cam && R.cam.refInfo ? (R.cam.refInfo.err ? [['Basemap shape', 'not used: ' + R.cam.refInfo.err]] : [['Basemap shape', R.cam.refInfo.n.toLocaleString() + ' control matches in ' + R.cam.refInfo.frames + ' frames (' + R.cam.refInfo.ref.name + ', ' + fx(R.cam.refInfo.ref.res, 2) + ' m) · fit ' + fx(R.cam.refInfo.fitBefore.med, 2) + ' → ' + fx(R.cam.refInfo.fit.med, 2) + ' m median'], ['Check points (held out)', R.cam.refInfo.check ? R.cam.refInfo.check.n + ' points: ' + fx(R.cam.refInfo.checkBefore.med, 2) + ' → ' + fx(R.cam.refInfo.check.med, 2) + ' m median, ' + fx(R.cam.refInfo.checkBefore.p90, 2) + ' → ' + fx(R.cam.refInfo.check.p90, 2) + ' m p90 (after the shared offset)' : '–'], ['Basemap vs metadata position', fx(R.cam.refInfo.t[0], 1) + ' m E, ' + fx(R.cam.refInfo.t[1], 1) + ' m N (' + (CFG.mosRefPos ? 'applied' : 'reported only — position kept from the metadata') + ')']]) : []),
     ...(R.cam ? [['Orientation solve', R.cam.ties.toLocaleString() + ' tie points over ' + R.cam.links + ' frame links · reprojection median ' + fx(R.cam.before.med, 2) + ' → ' + fx(R.cam.after.med, 2) + ' px, 90th percentile ' + fx(R.cam.before.p90, 1) + ' → ' + fx(R.cam.after.p90, 1) + ' px'], ['Camera calibration', 'focal setting ' + fx((Math.exp(R.cam.G[0]) - 1) * 100, 2) + '% · radial k1 ' + fx(R.cam.G[1], 4) + ', k2 ' + fx(R.cam.G[2], 4)], ['Interior orientation', 'principal point offset ' + fx(R.cam.G[3] * R.Wf / 2, 1) + ', ' + fx(R.cam.G[4] * R.Hf / 2, 1) + ' px'], ['Exterior orientation', 'per frame: pointing ' + fx(R.cam.rot, 3) + '° RMS · focal ' + fx(R.cam.fov, 2) + '% RMS about the mean']] : []),
     ['Seam misfit', R.nObs ? 'metadata only ' + fx(R.before.med, 2) + ' m median (' + fx(R.before.medPx, 1) + ' px)' + (R.reg ? ' → registered ' + fx(R.after.med, 2) + ' m (' + fx(R.after.medPx, 1) + ' px)' : '') : 'no tie points'],
     ['Frame corrections', R.mode === 'camera' ? 'camera orientation per frame (see above)' : R.reg ? 'shift median ' + fx(R.shiftMed, 1) + ' m, max ' + fx(R.shiftMax, 1) + ' m' : 'none (metadata placement)'],
