@@ -33,7 +33,7 @@ header .ver{color:var(--dim)}
 header #fileName{color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40vw}
 header #status{margin-left:auto;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 main{display:grid;grid-template-columns:1fr 380px;min-height:0}
-#left{display:grid;grid-template-rows:1fr 5px var(--bottomH,300px) 96px;min-width:0;min-height:0}
+#left{display:grid;grid-template-rows:1fr 5px var(--bottomH,300px) 150px;min-width:0;min-height:0}
 #mapWrap{position:relative;min-height:0;overflow:hidden;background:#0b0d0e}
 #map{position:absolute;inset:0;width:100%;height:100%;cursor:grab;display:block}
 #map.draw{cursor:crosshair}
@@ -59,7 +59,7 @@ body.dragover #mapWrap{outline:2px dashed var(--acc);outline-offset:-6px}
 .tc{font-size:18px;color:var(--acc);letter-spacing:.04em}
 .kv{display:grid;grid-template-columns:auto 1fr auto 1fr;gap:1px 10px}
 .kv span:nth-child(odd){color:var(--mu)}
-#tl{width:100%;height:96px;display:block;background:var(--p1);border-top:1px solid var(--line);cursor:pointer}
+#tl{width:100%;height:150px;display:block;background:var(--p1);border-top:1px solid var(--line);cursor:pointer}
 aside{display:flex;flex-direction:column;border-left:1px solid var(--line);background:var(--p1);min-height:0}
 #tabs{display:flex;border-bottom:1px solid var(--line)}
 #tabs button{flex:1;border:0;border-radius:0;background:none;padding:7px 0;color:var(--mu);border-bottom:2px solid transparent}
@@ -94,6 +94,25 @@ pre.hex{white-space:pre-wrap;word-break:break-all;color:var(--mu);font-size:11px
 .bar{height:4px;background:var(--p3);margin-top:3px}
 .bar i{display:block;height:100%;background:var(--acc)}
 kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu)}
+#tlPrev{position:fixed;display:none;pointer-events:none;border:1px solid var(--acc);background:#000;z-index:20}
+#tlPrev div{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.65);color:var(--tx);font-size:10px;padding:1px 4px}
+.mark{border:1px solid var(--line);padding:5px 6px;margin-bottom:4px;background:var(--p2)}
+.mark.sel{border-color:var(--acc)}
+.mark textarea{width:100%;font:inherit;color:var(--tx);background:var(--p3);border:1px solid var(--line2);min-height:34px;resize:vertical}
+.tier{display:inline-block;padding:0 6px;border:1px solid var(--line2);border-radius:2px;margin-left:6px}
+.tier.A{border-color:var(--ok);color:var(--ok)}.tier.B{border-color:#9fb3c8;color:#9fb3c8}.tier.C{border-color:var(--acc);color:var(--acc)}.tier.D{border-color:var(--bad);color:var(--bad)}
+ #lib{position:fixed;inset:0;z-index:30;background:var(--bg);display:none;flex-direction:column}
+#lib.on{display:flex}
+#libClass{text-align:center;font-weight:bold;letter-spacing:.1em;padding:2px;background:#2d6a2d;color:#fff}
+.libbar{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--p1);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.libbar .logo{font-weight:bold;letter-spacing:.14em;color:var(--acc)}
+.libbody{flex:1;display:grid;grid-template-columns:1fr 560px;min-height:0}
+.libmap{position:relative;min-height:0;background:#0b0d0e}
+.libmap canvas{position:absolute;inset:0;width:100%;height:100%;cursor:grab}
+.libattr{position:absolute;bottom:4px;right:8px;color:var(--mu);background:rgba(14,16,18,.75);padding:2px 6px;font-size:10px;pointer-events:none}
+.libside{border-left:1px solid var(--line);padding:10px;overflow:auto;background:var(--p1)}
+.libside img{background:#000;object-fit:cover;display:block}
+.pa{color:#e3b55f;text-decoration:underline dotted}.pd{color:#9fb3c8}
 </style>
 </head>
 <body>
@@ -102,6 +121,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
 <header>
   <span class="logo">MISB VIEWER</span><span class="ver" id="ver"></span>
   <button id="btnOpen" title="Open video, KLV, CSV/JSON metadata or DEM">Open…</button>
+  <button id="btnLib" title="Video library (STAC catalogue in your folder)">Library</button>
   <input type="file" id="fileIn" multiple hidden>
   <span id="fileName" class="muted">no file</span>
   <span id="status"></span>
@@ -127,18 +147,20 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
   <div id="bottom">
     <div id="vidWrap"><video id="vid" muted playsinline preload="auto"></video><canvas id="vidOv"></canvas><div id="vidMsg">No video loaded</div></div>
     <div id="ctrl">
-      <div class="row"><span class="tc" id="tc">--:--.---</span><span class="muted" id="fr">frame – / –</span></div>
+      <div class="row"><span class="tc" id="tc" title="SMPTE timecode (media time)">--:--:--:--</span><span id="shut" class="accc"></span><span class="muted" id="fr">frame – / –</span></div>
+      <div class="row muted" id="utc" title="UTC from metadata">UTC –</div>
       <div class="row">
         <button id="bStart" title="Start (Home)">|◀</button>
         <button id="bBack" title="−1 s (Shift+←)">◀◀</button>
-        <button id="bPrev" title="−1 frame (←)">◀|</button>
-        <button id="bPlay" title="Play/Pause (Space)" style="min-width:44px">▶</button>
-        <button id="bNext" title="+1 frame (→)">|▶</button>
+        <button id="bPrev" title="−1 frame (← or K+J)">◀|</button>
+        <button id="bPlay" title="Play/Pause (Space) · shuttle J/K/L" style="min-width:44px">▶</button>
+        <button id="bNext" title="+1 frame (→ or K+L)">|▶</button>
         <button id="bFwd" title="+1 s (Shift+→)">▶▶</button>
         <button id="bEnd" title="End (End)">▶|</button>
-        <select id="rate" title="Playback rate"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select>
+        <select id="rate" title="Playback rate"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option><option>8</option></select>
+        <button id="bMark" title="Bookmark at playhead (M) · previous/next bookmark: , and .">◆ Mark</button>
       </div>
-      <div class="row">
+      <div class="row" id="clipRow">
         <button id="bIn" title="Set clip in (I)">In</button>
         <button id="bOut" title="Set clip out (O)">Out</button>
         <button id="bClr" title="Clear clip">Clear</button>
@@ -149,17 +171,20 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
     </div>
   </div>
   <canvas id="tl"></canvas>
+  <div id="tlPrev"><canvas width="192" height="108"></canvas><div></div></div>
 </section>
 <aside>
   <div id="tabs">
     <button data-p="pFile" class="on">FILE</button>
     <button data-p="pMeta">META</button>
+    <button data-p="pMarks">MARKS</button>
     <button data-p="pSearch">SEARCH</button>
     <button data-p="pExport">EXPORT</button>
     <button data-p="pSet">SETTINGS</button>
   </div>
   <div class="pane on" id="pFile"><p class="muted">Open or drop a file to begin.</p></div>
   <div class="pane" id="pMeta"></div>
+  <div class="pane" id="pMarks"></div>
   <div class="pane" id="pSearch"></div>
   <div class="pane" id="pExport"></div>
   <div class="pane" id="pSet"></div>
@@ -173,7 +198,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.2.1', build: 3 };
+const BUILD = { ver: 'R0.3.0', build: 4 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -936,7 +961,8 @@ function refElev(st) {
   if (isNum(st.fcHAE)) return st.fcHAE - CFG.geoidOffset;
   return CFG.flatElev;
 }
-function imgSize() { return [S.video && S.video.width || CFG.imgW, S.video && S.video.height || CFG.imgH]; }
+let IMGSZ = null; // override used by the library indexer
+function imgSize() { if (IMGSZ) return IMGSZ; return [S.video && S.video.width || CFG.imgW, S.video && S.video.height || CFG.imgH]; }
 function vfovOf(st) { if (isNum(st.vfov) && st.vfov > 0) return st.vfov; const [w, h] = imgSize(); return isNum(st.hfov) ? 2 * Math.atan(Math.tan(st.hfov * D2R / 2) * h / w) * R2D : null; }
 function hasPose(st) { return st && isNum(st.sensLat) && isNum(st.sensLon) && isNum(sensAltMSL(st)) && isNum(st.platHdg) && isNum(st.relAz) && isNum(st.relEl) && isNum(st.hfov) && st.hfov > 0; }
 function sensorRot(st) {
@@ -1367,7 +1393,7 @@ const MapV = {
     }
     if (this.overlay) { g.save(); try { this.overlay(g); } catch (e) { console.error(e); } g.restore(); }
     this.scaleBar(g);
-    $('#mapAttr').textContent = b.attr + (CFG.demMode === 'terrarium' ? ' · DEM: Terrarium (AWS)' : CFG.demMode === 'asc' && DEM.asc ? ' · DEM: ASCII grid' : '');
+    (this.attrEl || $('#mapAttr')).textContent = b.attr + (CFG.demMode === 'terrarium' ? ' · DEM: Terrarium (AWS)' : CFG.demMode === 'asc' && DEM.asc ? ' · DEM: ASCII grid' : '');
   },
   scaleBar(g) {
     const mpp = 156543.03392 * Math.cos(this.lat * D2R) / 2 ** this.z;
@@ -1378,6 +1404,15 @@ const MapV = {
     g.fillText(m >= 1000 ? m / 1000 + ' km' : m + ' m', x + w / 2, y - 6); g.textAlign = 'left';
   },
 };
+
+const MAP_DRAW = MapV.draw;
+function makeMap(cv, attrEl) {
+  const m = Object.create(MapV);
+  Object.assign(m, { cv: null, ctx: null, W: 0, H: 0, lat: -25, lon: 134, z: 3.6, queued: false, overlay: null, attrEl, tiles: MapV.tiles });
+  m.draw = function () { MAP_DRAW.call(this); };
+  m.init(cv);
+  return m;
+}
 
 /* =====================================================================
    APPLICATION STATE & LOADING
@@ -1396,8 +1431,9 @@ const warn = m => { S.warnings.push(m); console.warn(m); };
 function resetState() {
   if (S.vidUrl) URL.revokeObjectURL(S.vidUrl);
   vid.removeAttribute('src'); vid.load();
-  Object.assign(S, { metaSource: '', altInfo: null, logRows: null, logSegments: [], name: '', size: 0, kind: null, u8: null, ts: null, mp4: null, video: null, frames: [], fps: 0, minPts: 0, klv: [], track: null, dur: 0, playable: false, vidUrl: null, warnings: [], inT: null, outT: null, results: [], selRes: -1, hist: [], trackPts: [], fcPts: [], series: [], bbox: null, cur: null, pick: null, sec: null, pktIdx: -1 });
+  Object.assign(S, { marks: [], selMark: null, libItemId: null, libMarks: null, metaSource: '', altInfo: null, logRows: null, logSegments: [], name: '', size: 0, kind: null, u8: null, ts: null, mp4: null, video: null, frames: [], fps: 0, minPts: 0, klv: [], track: null, dur: 0, playable: false, vidUrl: null, warnings: [], inT: null, outT: null, results: [], selRes: -1, hist: [], trackPts: [], fcPts: [], series: [], bbox: null, cur: null, pick: null, sec: null, pktIdx: -1 });
   P.vt = 0; P.playing = false;
+  if (typeof LIB !== 'undefined' && LIB.pending) { S.libItemId = LIB.pending.id; S.libMarks = LIB.pending.marks; LIB.pending = null; }
 }
 
 async function openFiles(files) {
@@ -1420,8 +1456,7 @@ async function loadVideoFile(file) {
   try {
     const buf = new Uint8Array(await file.arrayBuffer());
     S.u8 = buf;
-    const isMP4 = buf.length > 12 && /^(ftyp|moov|free|mdat|wide|skip)$/.test(String.fromCharCode(buf[4], buf[5], buf[6], buf[7]));
-    if (isMP4) await loadMP4(buf, file); else await loadTS(buf);
+    if (isMP4Buf(buf)) await loadMP4(buf, file); else await loadTS(buf);
   } catch (e) {
     console.error(e); status('Error: ' + e.message, 'badc'); warn(e.message);
   }
@@ -1430,31 +1465,28 @@ async function loadVideoFile(file) {
   status('Loaded in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s · ' + S.klv.length + ' KLV packets');
 }
 
-async function loadTS(buf) {
-  S.kind = 'ts';
-  const ts = await demuxTS(buf, f => status('Demuxing… ' + Math.round(f * 100) + '%'));
-  S.ts = ts;
-  if (ts.resyncs) warn(ts.resyncs + ' sync losses during demux');
+/* ---- pure extraction (shared by the player and the library indexer) ---- */
+async function extractTS(buf, opt = {}) {
+  const W = [], R = { kind: 'ts', warnings: W, video: null, minPts: 0, frames: [], klv: [], metaSource: '', vidBlob: null };
+  const ts = await demuxTS(buf, opt.progress);
+  R.ts = ts;
+  if (ts.resyncs) W.push(ts.resyncs + ' sync losses during demux');
   const vs = [...ts.streams.values()].find(s => s.kind === 'video');
   if (vs) {
     const v = buildVideoFromTS(vs, ts.pesList.get(vs.pid) || []);
-    S.video = v;
+    R.video = v;
     if (v.samples.length) {
-      S.minPts = Math.min(...v.samples.map(s => s.pts));
-      S.frames = v.samples.map(s => (s.pts - S.minPts) / 90000).sort((a, b) => a - b);
+      R.minPts = v.samples.reduce((m, s) => Math.min(m, s.pts), Infinity);
+      R.frames = v.samples.map(s => (s.pts - R.minPts) / 90000).sort((a, b) => a - b);
     }
-    if (v.playable) {
-      status('Remuxing H.264 for playback…');
+    if (v.playable && opt.remux) {
+      opt.onRemux && opt.onRemux();
       await new Promise(r => setTimeout(r));
-      const blob = writeMP4({ timescale: 90000, entry: avc1Entry(v.sps, v.pps, v.width, v.height), width: v.width, height: v.height, samples: v.samples }, []);
-      S.vidUrl = URL.createObjectURL(blob);
-      S.playable = true;
-    } else warn('Video codec ' + v.codec + ' cannot be remuxed for browser playback — metadata-only mode');
-  } else warn('No video stream found');
-  // KLV
-  const klvStreams = [...ts.streams.values()].filter(s => s.kind === 'klv' || s.kind === 'private');
+      R.vidBlob = writeMP4({ timescale: 90000, entry: avc1Entry(v.sps, v.pps, v.width, v.height), width: v.width, height: v.height, samples: v.samples }, []);
+    } else if (!v.playable) W.push('Video codec ' + v.codec + ' cannot be remuxed for browser playback — metadata-only mode');
+  } else W.push('No video stream found');
   const recs = [];
-  for (const ks of klvStreams) {
+  for (const ks of [...ts.streams.values()].filter(s => s.kind === 'klv' || s.kind === 'private')) {
     let rest = null, found = 0;
     for (const p of ts.pesList.get(ks.pid) || []) {
       const data = rest ? concatU8([rest, p.data]) : p.data;
@@ -1463,38 +1495,49 @@ async function loadTS(buf) {
     }
     if (found && ks.kind === 'private') { ks.kind = 'klv'; ks.codec += ' (UAS LS found)'; }
   }
-  assignTimes(recs, 90000, S.minPts);
-  S.klv = recs.sort((a, b) => a.t - b.t);
-  if (recs.length) S.metaSource = 'MISB ST 0601 KLV (MPEG-TS)';
+  assignTimes(recs, 90000, R.minPts, W);
+  R.klv = recs.sort((a, b) => a.t - b.t);
+  if (recs.length) R.metaSource = 'MISB ST 0601 KLV (MPEG-TS)';
+  return R;
 }
-
-async function loadMP4(buf, file) {
-  S.kind = 'mp4';
-  const m = parseMP4(buf); S.mp4 = m;
+function extractMP4(buf) {
+  const W = [], R = { kind: 'mp4', warnings: W, video: null, minPts: 0, frames: [], klv: [], metaSource: '' };
+  const m = parseMP4(buf); R.mp4 = m;
   const vt = m.tracks.find(t => t.handler === 'vide');
   if (vt) {
-    const ts = vt.timescale;
-    S.video = { codec: vt.entryType, timescale: ts, samples: vt.samples, width: vt.width, height: vt.height, entry: vt.entry, playable: true, track: vt };
-    const base = vt.mediaStart;
-    S.minPts = base;
-    S.frames = vt.samples.map(s => (s.pts - base) / ts + vt.emptyStart).sort((a, b) => a - b);
-  } else warn('No video track');
+    R.video = { codec: vt.entryType, timescale: vt.timescale, samples: vt.samples, width: vt.width, height: vt.height, entry: vt.entry, playable: true, track: vt };
+    R.minPts = vt.mediaStart;
+    R.frames = vt.samples.map(s => (s.pts - vt.mediaStart) / vt.timescale + vt.emptyStart).sort((a, b) => a - b);
+  } else W.push('No video track');
   const recs = [];
   for (const t of m.tracks.filter(t => t !== vt)) {
     const dr = droneTrackRecords(buf, t);
-    if (dr && dr.recs.length) { recs.push(...dr.recs); S.klvTrack = t; S.metaSource = dr.recs[0].f.src + (t.entryType ? ' [' + t.entryType + ']' : ''); continue; }
-    if (dr && dr.unknownProto) warn('DJI metadata protocol dvtm_' + dr.unknownProto + ' has no known field map yet — track not decoded');
-    else if (dr && dr.kind) warn(dr.kind + ' metadata track found but no positioned samples decoded');
+    if (dr && dr.recs.length) { recs.push(...dr.recs); R.klvTrack = t; R.metaSource = dr.recs[0].f.src + (t.entryType ? ' [' + t.entryType + ']' : ''); continue; }
+    if (dr && dr.unknownProto) W.push('DJI metadata protocol dvtm_' + dr.unknownProto + ' has no known field map yet — track not decoded');
+    else if (dr && dr.kind) W.push(dr.kind + ' metadata track found but no positioned samples decoded');
     const n0 = recs.length;
     for (const s of t.samples) {
       const r = scanKLV(buf.subarray(s.off, s.off + s.size));
       for (const k of r.packets) { const rec = makeRec(k.raw, null, s.off, 'trak ' + t.id); rec.t = (s.pts - t.mediaStart) / t.timescale + t.emptyStart + CFG.klvOffset; recs.push(rec); }
     }
-    if (recs.length > n0) { S.klvTrack = t; S.metaSource = 'MISB ST 0601 KLV (MP4 ' + t.entryType + ' track)'; }
+    if (recs.length > n0) { R.klvTrack = t; R.metaSource = 'MISB ST 0601 KLV (MP4 ' + t.entryType + ' track)'; }
   }
-  S.klv = recs.sort((a, b) => a.t - b.t);
+  R.klv = recs.sort((a, b) => a.t - b.t);
+  if (!R.klv.length) W.push('No KLV or drone metadata track in MP4 — load a sidecar (DJI .SRT, flight-log .csv, .klv, .json) to georeference');
+  return R;
+}
+const isMP4Buf = buf => buf.length > 12 && /^(ftyp|moov|free|mdat|wide|skip)$/.test(String.fromCharCode(buf[4], buf[5], buf[6], buf[7]));
+async function loadTS(buf) {
+  const R = await extractTS(buf, { remux: true, progress: f => status('Demuxing… ' + Math.round(f * 100) + '%'), onRemux: () => status('Remuxing H.264 for playback…') });
+  Object.assign(S, { kind: 'ts', ts: R.ts, video: R.video, minPts: R.minPts, frames: R.frames, klv: R.klv, metaSource: R.metaSource });
+  R.warnings.forEach(warn);
+  if (R.vidBlob) { S.vidUrl = URL.createObjectURL(R.vidBlob); S.playable = true; }
+}
+async function loadMP4(buf, file) {
+  const R = extractMP4(buf);
+  Object.assign(S, { kind: 'mp4', mp4: R.mp4, video: R.video, minPts: R.minPts, frames: R.frames, klv: R.klv, metaSource: R.metaSource, klvTrack: R.klvTrack });
+  R.warnings.forEach(warn);
   S.vidUrl = URL.createObjectURL(file); S.playable = true;
-  if (!S.klv.length) warn('No KLV or drone metadata track in MP4 — load a sidecar (DJI .SRT, flight-log .csv, .klv, .json) to georeference');
 }
 
 function makeRec(raw, pts, off, src) {
@@ -1502,7 +1545,7 @@ function makeRec(raw, pts, off, src) {
   return { raw, pts, off, src, f: d.f, items: d.items, csOk: d.csOk, t: 0 };
 }
 /* KLV time: PES PTS when present, else Precision Time Stamp relative to the first stamped packet */
-function assignTimes(recs, scale, basePts) {
+function assignTimes(recs, scale, basePts, W) {
   const withPts = recs.filter(r => r.pts !== null && r.pts !== undefined);
   const firstTs = recs.find(r => isNum(r.f.ts));
   let tsAnchor = null;
@@ -1514,7 +1557,7 @@ function assignTimes(recs, scale, basePts) {
     else if (isNum(r.f.ts) && firstTs) r.t = (r.f.ts - firstTs.f.ts) / 1e6;
     r.t += CFG.klvOffset;
   }
-  if (!withPts.length && recs.length) warn('KLV has no PES timestamps — timed from Precision Time Stamp (tag 2)');
+  if (!withPts.length && recs.length) (W ? W.push.bind(W) : warn)('KLV has no PES timestamps — timed from Precision Time Stamp (tag 2)');
 }
 
 function finishLoad() {
@@ -1544,13 +1587,17 @@ function finishLoad() {
   DEM.reset(); preloadDEM();
   if (S.bbox) MapV.fit(S.bbox);
   buildFilePane(); buildMetaPane(); buildSearchPane(); buildExportPane();
+  TL.v0 = TL.v1 = 0; thumbsReset(); loadMarks(S.libMarks);
   seek(S.frames.length ? S.frames[0] : 0);
   dirty();
 }
 
 function rebuildTrack() {
   S.altInfo = applyDroneAltitude(S.klv);
+  applyAssumptions(S.klv);
+  S.tier = S.klv.length ? computeTier() : null;
   S.track = S.klv.length ? new Track(S.klv) : null;
+  updateTierBadge();
   computeDerived();
 }
 function computeDerived() {
@@ -1571,6 +1618,11 @@ function computeDerived() {
   for (let t = t0; t <= t1 + 1e-6; t += step) {
     const st = T.at(t); const fp = footprint(st, 1);
     if (fp) { S.hist.push({ t, pts: fp.pts }); fp.pts.forEach(p => !p.horizon && ext(p.lat, p.lon)); }
+  }
+  if (!S.hist.length && S.trackPts.length && b[0] <= b[2]) { // tier C: include the possible-coverage radius in the extent
+    const alts = S.trackPts.map(p => p[2]).filter(isNum), agl = Math.max(10, (median(alts) || 100) - CFG.flatElev);
+    const r = Math.min(CFG.maxRange, agl * Math.tan(CFG.maxLook * D2R)), la = (b[0] + b[2]) / 2;
+    b = [b[0] - r / mpdLat(la), b[1] - r / mpdLon(la), b[2] + r / mpdLat(la), b[3] + r / mpdLon(la)];
   }
   const sstep = Math.max(0.2, (t1 - t0) / 2000);
   for (let t = t0; t <= t1 + 1e-6; t += sstep) S.series.push(seriesPoint(T.at(t), t));
@@ -1625,7 +1677,8 @@ function stepFrame(n) {
 let _dirty = true, _lastT = -1, _lastMeta = 0;
 const dirty = () => { _dirty = true; };
 function loop(now) {
-  if (P.playing && !S.playable) {
+  shuttleTick(now);
+  if (P.playing && !S.playable && !P.rev) {
     P.vt += (now - P.last) / 1000 * parseFloat($('#rate').value); P.last = now;
     if (P.vt >= S.dur) { P.vt = S.dur; P.pause(); }
   }
@@ -1662,7 +1715,7 @@ function updateCurrent(t) {
   else if (isNum(st.fcLat)) { c = { lat: st.fcLat, lon: st.fcLon, h: refElev(st) }; geo = viewGeom(st, c.lat, c.lon, c.h); }
   let aoiInfo = null;
   if (S.aoi.length && S.aoiDone && P2) aoiInfo = aoiMetrics(st, P2);
-  S.cur = { t, st, fp, proj: P2, center: c, geo, aoi: aoiInfo };
+  S.cur = { t, st, fp, proj: P2, center: c, geo, aoi: aoiInfo, gprov: fp ? geomProv(st, fp.kind) : null };
 }
 
 /* =====================================================================
@@ -1694,10 +1747,11 @@ MapV.overlay = g => {
     poly(S.aoi, S.aoiDone); if (S.aoiDone && S.aoi.length > 2) g.fill(); g.stroke();
     for (const p of S.aoi) { const [x, y] = MapV.toScr(p[0], p[1]); g.fillStyle = COL.aoi; g.fillRect(x - 3, y - 3, 6, 6); }
   }
+  if (cur && !cur.fp && S.tier && S.tier.eff === 'C' && isNum(cur.st.sensLat)) drawPossibleCoverage(g, cur.st);
   if (cur && cur.fp) {
-    const pts = cur.fp.pts;
-    g.strokeStyle = COL.acc; g.fillStyle = S.ortho ? 'rgba(0,0,0,0)' : 'rgba(240,160,48,.13)'; g.lineWidth = 2;
-    poly(pts.map(p => [p.lat, p.lon]), true); g.fill(); g.stroke();
+    const pts = cur.fp.pts, gp = cur.gprov || { level: 'd' };
+    g.strokeStyle = COL.acc; g.fillStyle = S.ortho ? 'rgba(0,0,0,0)' : gp.level === 'a' ? hatchPattern(g) : 'rgba(240,160,48,.13)'; g.lineWidth = 2;
+    poly(pts.map(p => [p.lat, p.lon]), true); g.fill(); provStroke(g, gp.level); g.stroke(); g.setLineDash([]);
     const [ux, uy] = MapV.toScr(pts[0].lat, pts[0].lon); g.fillStyle = COL.acc; g.beginPath(); g.arc(ux, uy, 3.5, 0, 7); g.fill(); // UL marker
     if (cur.fp.kind === 'pose' && cur.st.corners && $('#cMetaCorners') && $('#cMetaCorners').checked) {
       g.strokeStyle = COL.meta; g.lineWidth = 1; g.setLineDash([5, 4]); poly(cur.st.corners, true); g.stroke(); g.setLineDash([]);
@@ -1717,14 +1771,16 @@ function updateLegend() {
   const L = [['Sensor track', COL.track], ['Frame centre track', COL.fc, 'dashed'], ['Current footprint', COL.acc], ['Footprint history', 'rgba(205,211,217,.5)'], ['AOI', COL.aoi]];
   if (S.results.length) L.push(['Search hits', 'rgba(108,195,255,.7)']);
   if (S.cur && S.cur.fp && S.cur.fp.kind === 'pose' && S.cur.st.corners) L.push(['Encoder corners (KLV)', COL.meta, 'dashed']);
-  const kind = S.cur && S.cur.fp ? (S.cur.fp.kind === 'pose' ? 'Footprint: sensor model' + (DEM.active() ? ' + DEM ray-cast' : ' + flat ' + (isNum(S.cur.st.fcElev) ? 'FC elev' : CFG.flatElev + ' m')) : 'Footprint: KLV corners') : 'No footprint';
-  $('#legend').innerHTML = L.map(([n, c, d]) => '<div><i style="border-color:' + c + (d ? ';border-top-style:dashed' : '') + '"></i>' + n + '</div>').join('') + '<div class="muted">' + kind + '</div>';
+  const gp = S.cur && S.cur.gprov;
+  let kind = gp ? 'View box: <b class="' + (gp.level === 'a' ? 'pa' : gp.level === 'd' ? 'pd' : 'okc') + '">' + PROV_LABEL[gp.level] + '</b> — ' + esc(gp.notes.join(', ')) : (S.tier && S.tier.eff === 'C' ? '<span class="pa">No sensor geometry — hatched disc = possible coverage (estimate)</span>' : 'No view box');
+  kind += '<div class="dim">line: solid measured · dashed derived · dotted/hatched assumed</div>';
+  $('#legend').innerHTML = L.map(([n, c, d]) => '<div><i style="border-color:' + c + (d ? ';border-top-style:dashed' : '') + '"></i>' + n + '</div>').join('') + '<div class="muted" style="max-width:300px">' + kind + '</div>';
 }
 
 /* pseudo-ortho: drape the current frame on a ray-cast grid */
 const orthoSrc = document.createElement('canvas');
 function drawOrtho(g, cur) {
-  if (!S.playable || vid.readyState < 2 || !cur.proj) return;
+  if (!S.playable || vid.readyState < 2 || !cur.proj || !geomOK()) return;
   const [W, H] = imgSize(), N = CFG.orthoGrid, M = Math.max(2, Math.round(N * H / W));
   if (!S.orthoCache || S.orthoCache.t !== cur.t || S.orthoCache.N !== N) {
     const nodes = [];
@@ -1804,7 +1860,8 @@ vo.addEventListener('click', e => {
    HUD
    ===================================================================== */
 function updateHud(t) {
-  $('#tc').textContent = fmtT(t);
+  $('#tc').textContent = tcAt(t);
+  { const st0 = S.cur && S.cur.st; $('#utc').textContent = (st0 && isNum(st0.ts) ? 'UTC ' + fmtUTC(st0.ts) : 'UTC –') + '  ·  ' + fmtT(t); }
   const fi = frameIndex(t);
   $('#fr').textContent = S.frames.length ? 'frame ' + (fi + 1) + ' / ' + S.frames.length + (S.fps ? ' · ' + S.fps.toFixed(2) + ' fps' : '') : 'no frames';
   $('#clipTxt').textContent = (S.inT !== null || S.outT !== null) ? 'clip ' + fmtT(S.inT ?? 0) + ' → ' + fmtT(S.outT ?? S.dur) : '';
@@ -1819,74 +1876,12 @@ function updateHud(t) {
     ['GSD', g && isNum(g.gsd) ? g.gsd.toFixed(2) + ' m' : '–'], ['NIIRS≈', g && isNum(g.niirs) ? g.niirs.toFixed(1) : '–'],
     ['AOI', c.aoi ? Math.round(c.aoi.cov * 100) + '% · NIIRS ' + fx(c.aoi.niirs, 1) : '–'], ['Pick', S.pick ? S.pick.lat.toFixed(5) + ', ' + S.pick.lon.toFixed(5) + ' · ' + fx(S.pick.h, 0) + ' m' : 'click video'],
   ] : [['Metadata', 'none at this time']];
-  $('#hud').innerHTML = rows.map(([k, v]) => '<span>' + k + '</span><span>' + esc(v) + '</span>').join('');
+  const pv = st ? stateProv(st) : {}, gl = c && c.gprov ? c.gprov.level : null;
+  const PM = { 'Alt MSL': pv.sensAlt, 'Hdg/P/R': pv.platHdg, 'Az/El': pv.relEl, 'HFOV': pv.hfov, 'Centre': gl, 'Ground h': gl === 'a' ? 'a' : gl ? 'd' : null, 'Slant': gl, 'GSD': gl, 'NIIRS≈': gl, 'Grazing': gl };
+  $('#hud').innerHTML = rows.map(([k, v]) => '<span>' + k + '</span><span>' + esc(v) + (v !== '–' && PM[k] ? provMark(PM[k]) : '') + '</span>').join('');
   updateLegend();
 }
 
-/* =====================================================================
-   TIMELINE
-   ===================================================================== */
-const tl = $('#tl'), tg = tl.getContext('2d');
-const CHARTS = { niirs: ['NIIRS (est.)', 'niirs'], gsd: ['GSD m', 'gsd'], graz: ['Grazing °', 'graz'], slant: ['Slant range m', 'slantC'], alt: ['Altitude MSL m', 'alt'], hfov: ['HFOV °', 'hfov'], look: ['Look-from °T', 'look'] };
-function tlX(t) { return 8 + (tl.clientWidth - 16) * (t / (S.dur || 1)); }
-function tlT(x) { return clamp((x - 8) / (tl.clientWidth - 16) * (S.dur || 1), 0, S.dur); }
-function drawTimeline() {
-  const d = window.devicePixelRatio || 1, W = tl.clientWidth, H = tl.clientHeight;
-  if (tl.width !== Math.round(W * d)) { tl.width = Math.round(W * d); tl.height = Math.round(H * d); }
-  tg.setTransform(d, 0, 0, d, 0, 0); tg.clearRect(0, 0, W, H);
-  tg.font = '10px ' + getComputedStyle(document.body).fontFamily;
-  if (!S.dur) return;
-  // clip shading
-  if (S.inT !== null || S.outT !== null) { const a = tlX(S.inT ?? 0), b = tlX(S.outT ?? S.dur); tg.fillStyle = 'rgba(240,160,48,.10)'; tg.fillRect(a, 0, b - a, H); tg.fillStyle = COL.acc; tg.fillRect(a - 1, 0, 2, H); tg.fillRect(b - 1, 0, 2, H); }
-  // lane 1: keyframes + KLV ticks
-  tg.fillStyle = '#56606a'; tg.fillText('KLV', 10, 10);
-  tg.fillStyle = 'rgba(205,211,217,.35)';
-  const step = Math.max(1, Math.floor(S.klv.length / W));
-  for (let i = 0; i < S.klv.length; i += step) { const r = S.klv[i]; tg.fillStyle = r.csOk === false ? '#e06c5c' : 'rgba(205,211,217,.35)'; tg.fillRect(tlX(r.t), 3, 1, 8); }
-  if (S.video) { tg.fillStyle = 'rgba(240,160,48,.7)'; for (const s of S.video.samples) if (s.key) tg.fillRect(tlX((S.kind === 'ts' ? (s.pts - S.minPts) / 90000 : (s.pts - S.minPts) / S.video.timescale)), 12, 1, 4); }
-  // lane 2: search hits
-  for (const [i, r] of S.results.entries()) { tg.fillStyle = i === S.selRes ? '#6cc3ff' : 'rgba(108,195,255,.55)'; tg.fillRect(tlX(r.t0), 19, Math.max(2, tlX(r.t1) - tlX(r.t0)), 7); }
-  // lane 3: chart
-  const [lbl, key] = CHARTS[S.chartKey] || CHARTS.niirs;
-  const vals = S.series.map(p => p[key]).filter(isNum);
-  const y0 = 30, y1 = H - 16;
-  tg.strokeStyle = '#2c3238'; tg.beginPath(); tg.moveTo(8, y1 + 0.5); tg.lineTo(W - 8, y1 + 0.5); tg.stroke();
-  if (vals.length) {
-    let lo = Math.min(...vals), hi = Math.max(...vals); if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
-    tg.strokeStyle = 'rgba(205,211,217,.75)'; tg.lineWidth = 1; tg.beginPath(); let pen = false;
-    for (const p of S.series) { const v = p[key]; if (!isNum(v)) { pen = false; continue; } const x = tlX(p.t), y = y1 - (v - lo) / (hi - lo) * (y1 - y0); pen ? tg.lineTo(x, y) : tg.moveTo(x, y); pen = true; }
-    tg.stroke();
-    tg.fillStyle = '#7f8a94'; tg.fillText(lbl + '  ' + fx(hi, 1), 10, y0 + 8); tg.fillText(fx(lo, 1), 10, y1 - 2);
-  } else { tg.fillStyle = '#56606a'; tg.fillText(lbl + ': no data', 10, y0 + 10); }
-  // ruler
-  tg.fillStyle = '#7f8a94';
-  const tick = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600].find(s => (W - 16) / (S.dur / s) > 70) || 3600;
-  for (let s = 0; s <= S.dur; s += tick) { const x = tlX(s); tg.fillRect(x, H - 14, 1, 4); tg.fillText(fmtT(s).replace(/\.\d+$/, ''), x + 2, H - 3); }
-  // playhead
-  const x = tlX(P.time()); tg.fillStyle = COL.acc; tg.fillRect(x - 1, 0, 2, H);
-  if (tl._hover !== undefined) { tg.fillStyle = 'rgba(255,255,255,.4)'; tg.fillRect(tl._hover, 0, 1, H); tg.fillStyle = '#cdd3d9'; tg.fillText(fmtT(tlT(tl._hover)), Math.min(tl._hover + 4, W - 70), 28); }
-}
-(() => {
-  let drag = null;
-  tl.addEventListener('pointerdown', e => {
-    const x = e.offsetX;
-    if (S.inT !== null && Math.abs(x - tlX(S.inT)) < 5) drag = 'in';
-    else if (S.outT !== null && Math.abs(x - tlX(S.outT)) < 5) drag = 'out';
-    else { drag = 'seek'; P.pause(); seek(tlT(x)); }
-    tl.setPointerCapture(e.pointerId);
-  });
-  tl.addEventListener('pointermove', e => {
-    tl._hover = e.offsetX; dirty();
-    if (!drag) return;
-    const t = tlT(e.offsetX);
-    if (drag === 'seek') seek(t);
-    else if (drag === 'in') S.inT = Math.min(t, S.outT ?? S.dur);
-    else S.outT = Math.max(t, S.inT ?? 0);
-    if (drag !== 'seek') buildExportPane();
-  });
-  tl.addEventListener('pointerup', () => { drag = null; });
-  tl.addEventListener('pointerleave', () => { tl._hover = undefined; dirty(); });
-})();
 
 /* =====================================================================
    DRONE TELEMETRY ADAPTERS — formats that carry camera pointing + FOV
@@ -1940,7 +1935,10 @@ function droneRec(t, f, raw, o) {
     const disp = k === 'ts' ? fmtUTC(v) : isNum(v) ? (/Lat|Lon/.test(k) ? v.toFixed(7) : Number.isInteger(v) ? String(v) : v.toFixed(3)) : String(v);
     items.push({ tag: ki ? ki[0] : '', key: k, name, val: v, disp, units: ki ? ki[4] : DRONE_UNITS[k] || '' });
   }
-  return { raw: raw || new Uint8Array(0), pts: null, f, items, csOk: null, t, o };
+  const prov = {};
+  if (isNum(f.platHdg)) { const pv = f.gimbalYaw && /relative/.test(f.gimbalYaw) ? 'd' : 'm'; prov.platHdg = pv; prov.relEl = 'm'; prov.relRoll = 'm'; prov.relAz = 'm'; }
+  if (isNum(f.hfov)) prov.hfov = f.hfovSrc === 'metadata' ? 'm' : f.hfovSrc === 'focal length' ? 'd' : 'a';
+  return { raw: raw || new Uint8Array(0), pts: null, f, items, csOk: null, t, o, prov };
 }
 function rederiveDrone() { for (const r of S.klv) if (r.o) { const n = droneRec(r.t, dronePose(r.o), r.raw, r.o); r.f = n.f; r.items = n.items; } }
 /* resolve sensor altitude for drone records (call before building the Track) */
@@ -1953,11 +1951,12 @@ function applyDroneAltitude(recs) {
     const d = first && DEM.active() ? DEM.sample(first.f.sensLat, first.f.sensLon) : null;
     if (d !== null && d !== undefined) { base = d; how = 'DEM at first fix'; } else { base = CFG.flatElev; how = 'flat fallback'; }
   }
+  const baseProv = how === 'DEM at first fix' ? 'd' : 'a';
   for (const r of drone) {
-    const f = r.f;
-    if (CFG.droneAlt === 'abs' && isNum(f.absAlt)) f.sensAlt = f.absAlt;
-    else if (isNum(f.relAlt)) f.sensAlt = base + f.relAlt;
-    else if (isNum(f.absAlt)) f.sensAlt = f.absAlt;
+    const f = r.f; r.prov = r.prov || {};
+    if (CFG.droneAlt === 'abs' && isNum(f.absAlt)) { f.sensAlt = f.absAlt; r.prov.sensAlt = 'm'; }
+    else if (isNum(f.relAlt)) { f.sensAlt = base + f.relAlt; r.prov.sensAlt = baseProv; }
+    else if (isNum(f.absAlt)) { f.sensAlt = f.absAlt; r.prov.sensAlt = 'm'; }
   }
   return { base, how };
 }
@@ -2232,7 +2231,782 @@ function encodeUAS(st, meta = {}) {
 }
 function berEnc(n) { if (n < 128) return u8a([n]); const b = []; while (n > 0) { b.unshift(n & 255); n = Math.floor(n / 256); } return u8a([0x80 | b.length, ...b]); }
 const isDroneSource = () => S.klv.length && !!S.klv[0].f.src;
-function klvForExport(r) { return r.f.src ? encodeUAS(S.track.at(r.t), { mission: 'MIVIEWER-CONVERTED' }) : r.raw; }
+function klvForExport(r) { return (r.f.src || r.assumedKeys) ? encodeUAS(S.track.at(r.t), { mission: 'MIVIEWER-CONVERTED' + (r.assumedKeys || (r.prov && Object.values(r.prov).includes('a')) ? '-ASSUMED' : '') }) : r.raw; }
+
+/* =====================================================================
+   PLAYBACK STRIP — NLE / FMV conventions
+   J/K/L shuttle (incl. reverse), K+J/K+L frame step, SMPTE timecode +
+   UTC, zoomable timeline with overview bar, thumbnail filmstrip with hover
+   preview, information lanes (metadata health, bookmarks, search hits,
+   chart), bookmarks (M), EDL / clip-list export.
+   ===================================================================== */
+const tl = $('#tl'), tg = tl.getContext('2d');
+const CHARTS = { niirs: ['NIIRS (est.)', 'niirs'], gsd: ['GSD m', 'gsd'], graz: ['Grazing °', 'graz'], slant: ['Slant range m', 'slantC'], alt: ['Altitude MSL m', 'alt'], hfov: ['HFOV °', 'hfov'], look: ['Look-from °T', 'look'] };
+const TL = { v0: 0, v1: 0, padL: 46, hover: undefined, thumbs: [], queue: [], asked: new Set(), busy: false, tv: null, tvSrc: null };
+const LANE = { ov: [2, 9], film: [12, 50], klv: [53, 61], marks: [63, 77], hits: [79, 85], chart: [89, 132], ruler: [134, 150] };
+
+/* ---------- timecode ---------- */
+const p2 = n => String(n).padStart(2, '0');
+function smpte(fi, fps) {
+  if (!(fps > 0) || fi < 0) return '--:--:--:--';
+  const df = Math.abs(fps - 29.97) < 0.02 || Math.abs(fps - 59.94) < 0.03, nf = Math.round(fps);
+  let f = fi;
+  if (df) { const d = nf === 60 ? 4 : 2, fpm = nf * 60 - d, fp10 = nf * 600 - 9 * d, D = Math.floor(f / fp10), M = f % fp10; f += 9 * d * D + (M > d ? d * Math.floor((M - d) / fpm) : 0); }
+  return p2(Math.floor(f / (nf * 3600))) + ':' + p2(Math.floor(f / (nf * 60)) % 60) + ':' + p2(Math.floor(f / nf) % 60) + (df ? ';' : ':') + p2(f % nf);
+}
+const tcAt = t => smpte(S.frames.length ? frameIndex(t) : Math.round(t * (S.fps || 30)), S.fps || 30);
+const tcOf = t => smpte(Math.round(t * (S.fps || 30)), S.fps || 30);
+
+/* ---------- shuttle ---------- */
+P.shuttle = 0;
+function setShuttle(s) {
+  P.shuttle = s;
+  const el = $('#shut');
+  if (s === 0) { P.pause(); el.textContent = ''; return; }
+  el.textContent = (s < 0 ? '◀ ' : '▶ ') + Math.abs(s) + '×';
+  if (s > 0) {
+    $('#rate').value = String(s); vid.playbackRate = s;
+    if (S.outT !== null && $('#cLoop').checked && P.time() >= S.outT - 1e-3) seek(S.inT ?? 0);
+    P.playing = true; P.rev = false;
+    if (S.playable) vid.play().catch(e => status('Play: ' + e.message));
+    P.last = performance.now(); $('#bPlay').textContent = '❚❚';
+  } else {
+    if (S.playable) vid.pause();
+    P.playing = true; P.rev = true; P.revT = P.time(); P.last = performance.now(); $('#bPlay').textContent = '❚❚';
+  }
+}
+const _pause = P.pause.bind(P);
+P.pause = function () { this.rev = false; this.shuttle = 0; $('#shut').textContent = ''; _pause(); };
+const _play = P.play.bind(P);
+P.play = function () { const r = parseFloat($('#rate').value) || 1; this.shuttle = r; this.rev = false; vid.playbackRate = r; $('#shut').textContent = r !== 1 ? '▶ ' + r + '×' : ''; _play(); };
+/* reverse playback: step the clock backwards, issue seeks as fast as the decoder allows */
+function shuttleTick(now) {
+  if (!P.rev) return;
+  const dt = (now - (P.revLast || now)) / 1000; P.revLast = now;
+  P.revT = Math.max(S.inT !== null && $('#cLoop').checked ? S.inT : 0, P.revT - dt * Math.abs(P.shuttle));
+  if (!S.playable) P.vt = P.revT;
+  else if (!vid.seeking) vid.currentTime = P.revT;
+  if (P.revT <= 0) P.pause();
+  dirty();
+}
+
+/* ---------- view (zoom) ---------- */
+function tlView() { if (!(TL.v1 > TL.v0) || TL.v1 > S.dur + 1e-6) { TL.v0 = 0; TL.v1 = S.dur || 1; } return [TL.v0, TL.v1]; }
+function tlX(t) { const [a, b] = tlView(); return TL.padL + (tl.clientWidth - TL.padL - 8) * ((t - a) / (b - a)); }
+function tlT(x) { const [a, b] = tlView(); return clamp(a + (x - TL.padL) / (tl.clientWidth - TL.padL - 8) * (b - a), 0, S.dur); }
+function ovX(t) { return TL.padL + (tl.clientWidth - TL.padL - 8) * (t / (S.dur || 1)); }
+function zoomTL(f, tc) {
+  const [a, b] = tlView(), span = clamp((b - a) * f, Math.max(0.5, 10 / (S.fps || 30)), S.dur || 1);
+  const r = (tc - a) / (b - a); let v0 = tc - r * span; v0 = clamp(v0, 0, (S.dur || 1) - span);
+  TL.v0 = v0; TL.v1 = v0 + span; dirty();
+}
+function panTL(dt) { const [a, b] = tlView(), span = b - a; const v0 = clamp(a + dt, 0, (S.dur || 1) - span); TL.v0 = v0; TL.v1 = v0 + span; dirty(); }
+function keepPlayheadInView() {
+  const [a, b] = tlView(), t = P.time(); if (b - a >= S.dur - 1e-6) return;
+  if (t > b || t < a) { const span = b - a; const v0 = clamp(t - span * 0.1, 0, S.dur - span); TL.v0 = v0; TL.v1 = v0 + span; }
+}
+
+/* ---------- thumbnails (second, hidden decoder) ---------- */
+function thumbsReset() {
+  TL.thumbs = []; TL.queue = []; TL.asked = new Set(); TL.busy = false;
+  if (TL.tv) { TL.tv.removeAttribute('src'); TL.tv.load(); }
+  if (!S.playable || !S.vidUrl) return;
+  if (!TL.tv) {
+    TL.tv = document.createElement('video'); TL.tv.muted = true; TL.tv.preload = 'auto'; TL.tv.playsInline = true;
+    TL.tv.addEventListener('seeked', () => {
+      try {
+        const c = document.createElement('canvas'); c.width = 96; c.height = Math.round(96 * (TL.tv.videoHeight || 9) / (TL.tv.videoWidth || 16));
+        c.getContext('2d').drawImage(TL.tv, 0, 0, c.width, c.height);
+        const t = TL.tv.currentTime, i = bsearchLE(TL.thumbs, t, x => x.t);
+        TL.thumbs.splice(i + 1, 0, { t, c });
+        if (TL.thumbs.length > 900) TL.thumbs.splice(Math.floor(Math.random() * TL.thumbs.length), 1);
+      } catch (e) { /* tainted or not ready */ }
+      TL.busy = false; dirty(); setTimeout(thumbPump, 0);
+    });
+    TL.tv.addEventListener('error', () => { TL.busy = false; TL.dead = true; });
+  }
+  TL.dead = false; TL.tv.src = S.vidUrl;
+  TL.tv.addEventListener('loadeddata', () => { const n = Math.min(120, Math.max(8, Math.ceil(S.dur / 2))); for (let i = 0; i < n; i++) thumbAsk((i + 0.5) * S.dur / n); thumbPump(); }, { once: true });
+}
+function thumbAsk(t, urgent) { const k = Math.round(t * 20); if (TL.asked.has(k) && !urgent) return; TL.asked.add(k); urgent ? TL.queue.unshift(t) : TL.queue.push(t); }
+function thumbPump() {
+  if (TL.busy || TL.dead || !TL.tv || TL.tv.readyState < 1 || !TL.queue.length) return;
+  TL.busy = true; TL.tv.currentTime = clamp(TL.queue.shift(), 0, Math.max(0, S.dur - 0.05));
+}
+function thumbNear(t, tol) {
+  if (!TL.thumbs.length) return null;
+  const i = bsearchLE(TL.thumbs, t, x => x.t);
+  const c = [TL.thumbs[i], TL.thumbs[i + 1]].filter(Boolean).sort((a, b) => Math.abs(a.t - t) - Math.abs(b.t - t))[0];
+  return c && (tol === undefined || Math.abs(c.t - t) <= tol) ? c : null;
+}
+
+/* ---------- drawing ---------- */
+function drawTimeline() {
+  const d = window.devicePixelRatio || 1, W = tl.clientWidth, H = tl.clientHeight;
+  if (tl.width !== Math.round(W * d) || tl.height !== Math.round(H * d)) { tl.width = Math.round(W * d); tl.height = Math.round(H * d); }
+  tg.setTransform(d, 0, 0, d, 0, 0); tg.clearRect(0, 0, W, H);
+  tg.font = '10px ' + getComputedStyle(document.body).fontFamily; tg.textBaseline = 'alphabetic';
+  if (!S.dur) return;
+  if (P.playing) keepPlayheadInView();
+  const [v0, v1] = tlView(), L = TL.padL, R = W - 8, inView = t => t >= v0 && t <= v1;
+  const lbl = (txt, y) => { tg.fillStyle = '#56606a'; tg.fillText(txt, 4, y); };
+  // overview bar
+  tg.fillStyle = '#23282d'; tg.fillRect(L, LANE.ov[0], R - L, 7);
+  if (S.inT !== null || S.outT !== null) { tg.fillStyle = 'rgba(240,160,48,.35)'; tg.fillRect(ovX(S.inT ?? 0), LANE.ov[0], ovX(S.outT ?? S.dur) - ovX(S.inT ?? 0), 7); }
+  for (const r of S.results) { tg.fillStyle = 'rgba(108,195,255,.6)'; tg.fillRect(ovX(r.t0), LANE.ov[0] + 5, Math.max(1, ovX(r.t1) - ovX(r.t0)), 2); }
+  tg.strokeStyle = '#cdd3d9'; tg.lineWidth = 1; tg.strokeRect(ovX(v0) + 0.5, LANE.ov[0] + 0.5, Math.max(3, ovX(v1) - ovX(v0)) - 1, 6);
+  tg.fillStyle = COL.acc; tg.fillRect(ovX(P.time()) - 0.5, LANE.ov[0], 1.5, 7);
+  lbl(v1 - v0 < S.dur - 1e-6 ? (S.dur / (v1 - v0)).toFixed(1) + '×' : 'ALL', 9);
+  // filmstrip
+  const fh = LANE.film[1] - LANE.film[0];
+  if (S.playable && !TL.dead) {
+    const aspect = (S.video && S.video.width ? S.video.width / S.video.height : 16 / 9), sw = Math.max(24, Math.round(fh * aspect));
+    for (let x = L; x < R; x += sw) {
+      const t = tlT(x + sw / 2), slot = (v1 - v0) * sw / (R - L), th = thumbNear(t, slot * 0.75);
+      const w = Math.min(sw, R - x);
+      if (th) tg.drawImage(th.c, 0, 0, th.c.width * w / sw, th.c.height, x, LANE.film[0], w, fh);
+      else { tg.fillStyle = '#15181b'; tg.fillRect(x, LANE.film[0], w - 1, fh); thumbAsk(t); }
+    }
+    thumbPump();
+  } else { tg.fillStyle = '#15181b'; tg.fillRect(L, LANE.film[0], R - L, fh); tg.fillStyle = '#56606a'; tg.fillText(S.playable ? 'thumbnails unavailable' : 'no decodable video — metadata timeline', L + 6, LANE.film[0] + fh / 2 + 3); }
+  if (S.video) { tg.fillStyle = 'rgba(240,160,48,.85)'; const ts = S.video.timescale; for (const s of S.video.samples) if (s.key) { const t = (s.pts - S.minPts) / ts; if (inView(t)) tg.fillRect(tlX(t), LANE.film[1] - 3, 1, 3); } }
+  lbl('VIDEO', LANE.film[0] + 22);
+  // metadata health lane
+  lbl('META', LANE.klv[1]);
+  tg.fillStyle = '#1b1f23'; tg.fillRect(L, LANE.klv[0], R - L, LANE.klv[1] - LANE.klv[0]);
+  const K = S.klv, stale = Math.max(CFG.holdMax, 1);
+  for (let i = 0; i < K.length; i++) {
+    const r = K[i], next = K[i + 1];
+    if (next && next.t - r.t > stale && next.t >= v0 && r.t <= v1) { tg.fillStyle = 'rgba(224,108,92,.35)'; tg.fillRect(tlX(r.t), LANE.klv[0], tlX(next.t) - tlX(r.t), LANE.klv[1] - LANE.klv[0]); }
+  }
+  const step = Math.max(1, Math.floor(K.filter(r => inView(r.t)).length / Math.max(1, (R - L) / 2)));
+  let n = 0; for (const r of K) { if (!inView(r.t)) continue; if (n++ % step) continue; tg.fillStyle = r.csOk === false ? '#e06c5c' : (r.prov && Object.values(r.prov).includes('a')) ? '#e3b55f' : 'rgba(205,211,217,.5)'; tg.fillRect(tlX(r.t), LANE.klv[0] + 1, 1, LANE.klv[1] - LANE.klv[0] - 2); }
+  // bookmarks lane
+  lbl('MARKS', LANE.marks[1] - 3);
+  for (const m of S.marks) {
+    if (!inView(m.t)) continue;
+    const x = tlX(m.t), sel = m.id === S.selMark;
+    tg.fillStyle = sel ? '#fff' : COL.acc; tg.beginPath(); tg.moveTo(x, LANE.marks[0]); tg.lineTo(x + 5, LANE.marks[0] + 5); tg.lineTo(x, LANE.marks[0] + 10); tg.lineTo(x - 5, LANE.marks[0] + 5); tg.closePath(); tg.fill();
+    tg.fillStyle = '#cdd3d9'; tg.fillText(m.label.slice(0, 18), x + 7, LANE.marks[0] + 9);
+  }
+  // hits lane
+  lbl('HITS', LANE.hits[1]);
+  for (const [i, r] of S.results.entries()) { if (r.t1 < v0 || r.t0 > v1) continue; tg.fillStyle = i === S.selRes ? '#6cc3ff' : 'rgba(108,195,255,.55)'; const a = tlX(Math.max(r.t0, v0)), b = tlX(Math.min(r.t1, v1)); tg.fillRect(a, LANE.hits[0], Math.max(2, b - a), LANE.hits[1] - LANE.hits[0]); }
+  // chart lane
+  const [clbl, key] = CHARTS[S.chartKey] || CHARTS.niirs, y0 = LANE.chart[0], y1 = LANE.chart[1];
+  tg.strokeStyle = '#2c3238'; tg.beginPath(); tg.moveTo(L, y1 + 0.5); tg.lineTo(R, y1 + 0.5); tg.stroke();
+  const pts = S.series.filter(p => isNum(p[key]) && p.t >= v0 - 1 && p.t <= v1 + 1);
+  if (pts.length) {
+    let lo = Math.min(...pts.map(p => p[key])), hi = Math.max(...pts.map(p => p[key])); if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
+    tg.save(); tg.beginPath(); tg.rect(L, y0 - 2, R - L, y1 - y0 + 4); tg.clip();
+    tg.strokeStyle = 'rgba(205,211,217,.75)'; tg.lineWidth = 1; tg.beginPath(); let pen = false, lastT = -1;
+    for (const p of S.series) { if (p.t < v0 - 1 || p.t > v1 + 1) continue; const v = p[key]; if (!isNum(v)) { pen = false; continue; } const x = tlX(p.t), y = y1 - (v - lo) / (hi - lo) * (y1 - y0); pen ? tg.lineTo(x, y) : tg.moveTo(x, y); pen = true; lastT = p.t; }
+    tg.stroke(); tg.restore();
+    tg.fillStyle = '#7f8a94'; tg.fillText(fx(hi, 1), 4, y0 + 8); tg.fillText(fx(lo, 1), 4, y1);
+  }
+  tg.fillStyle = '#56606a'; tg.fillText(clbl, L + 4, y0 + 8);
+  // clip shading + handles (main lanes only)
+  if (S.inT !== null || S.outT !== null) {
+    const a = tlX(S.inT ?? 0), b = tlX(S.outT ?? S.dur);
+    tg.fillStyle = 'rgba(240,160,48,.08)'; tg.fillRect(Math.max(a, L), LANE.film[0], Math.min(b, R) - Math.max(a, L), LANE.chart[1] - LANE.film[0]);
+    tg.fillStyle = COL.acc; if (a >= L && a <= R) tg.fillRect(a - 1, LANE.film[0], 2, LANE.chart[1] - LANE.film[0]); if (b >= L && b <= R) tg.fillRect(b - 1, LANE.film[0], 2, LANE.chart[1] - LANE.film[0]);
+  }
+  // ruler (SMPTE)
+  tg.fillStyle = '#7f8a94';
+  const span = v1 - v0, tick = [1 / (S.fps || 30), 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600].find(s => (R - L) / (span / s) > 90) || 3600;
+  for (let s = Math.ceil(v0 / tick) * tick; s <= v1 + 1e-9; s += tick) { const x = tlX(s); tg.fillRect(x, LANE.ruler[0], 1, 4); tg.fillText(tick < 1 ? tcOf(s) : tcOf(s).slice(0, 8), x + 2, LANE.ruler[1] - 3); }
+  // playhead
+  const t = P.time();
+  if (inView(t)) { const x = tlX(t); tg.fillStyle = COL.acc; tg.fillRect(x - 1, LANE.film[0], 2, H - LANE.film[0]); }
+  if (TL.hover !== undefined && TL.hover >= L) { tg.fillStyle = 'rgba(255,255,255,.45)'; tg.fillRect(TL.hover, LANE.film[0], 1, H - LANE.film[0]); }
+}
+function showPreview(e) {
+  const pv = $('#tlPrev');
+  if (TL.hover === undefined || TL.hover < TL.padL || !S.playable || e.offsetY > LANE.ruler[0]) { pv.style.display = 'none'; return; }
+  const t = tlT(TL.hover), th = thumbNear(t);
+  thumbAsk(t, true); thumbPump();
+  const c = pv.querySelector('canvas'), g = c.getContext('2d');
+  g.fillStyle = '#000'; g.fillRect(0, 0, c.width, c.height);
+  if (th) g.drawImage(th.c, 0, 0, c.width, c.height);
+  const st = S.track ? S.track.at(t) : null;
+  pv.querySelector('div').textContent = tcAt(t) + (st && isNum(st.ts) ? '  ' + fmtUTC(st.ts).slice(11, 23) + 'Z' : '');
+  const r = tl.getBoundingClientRect();
+  pv.style.left = clamp(r.left + TL.hover - 96, 0, innerWidth - 196) + 'px'; pv.style.top = (r.top - 114) + 'px'; pv.style.display = 'block';
+}
+
+/* ---------- interaction ---------- */
+(() => {
+  let drag = null;
+  tl.addEventListener('pointerdown', e => {
+    const x = e.offsetX, y = e.offsetY;
+    if (y <= LANE.ov[1] + 2) { drag = 'ov'; const span = TL.v1 - TL.v0; TL.v0 = clamp(((x - TL.padL) / (tl.clientWidth - TL.padL - 8)) * S.dur - span / 2, 0, S.dur - span); TL.v1 = TL.v0 + span; dirty(); }
+    else if (y >= LANE.marks[0] && y <= LANE.marks[1]) { const m = S.marks.find(m => Math.abs(tlX(m.t) - x) < 7); if (m) { S.selMark = m.id; P.pause(); seek(m.t); buildMarksPane(); return; } drag = 'seek'; P.pause(); seek(tlT(x)); }
+    else if (S.inT !== null && Math.abs(x - tlX(S.inT)) < 5) drag = 'in';
+    else if (S.outT !== null && Math.abs(x - tlX(S.outT)) < 5) drag = 'out';
+    else { drag = 'seek'; P.pause(); seek(tlT(x)); }
+    tl.setPointerCapture(e.pointerId);
+  });
+  tl.addEventListener('pointermove', e => {
+    TL.hover = e.offsetX; showPreview(e); dirty();
+    if (!drag) return;
+    if (drag === 'ov') { const span = TL.v1 - TL.v0; TL.v0 = clamp(((e.offsetX - TL.padL) / (tl.clientWidth - TL.padL - 8)) * S.dur - span / 2, 0, S.dur - span); TL.v1 = TL.v0 + span; return; }
+    const t = tlT(e.offsetX);
+    if (drag === 'seek') seek(t);
+    else if (drag === 'in') S.inT = Math.min(t, S.outT ?? S.dur);
+    else S.outT = Math.max(t, S.inT ?? 0);
+    if (drag === 'in' || drag === 'out') buildExportPane();
+  });
+  tl.addEventListener('pointerup', () => { drag = null; });
+  tl.addEventListener('pointerleave', () => { TL.hover = undefined; $('#tlPrev').style.display = 'none'; dirty(); });
+  tl.addEventListener('wheel', e => {
+    e.preventDefault();
+    if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) panTL(((e.deltaX || e.deltaY) / 400) * (TL.v1 - TL.v0));
+    else zoomTL(Math.exp(e.deltaY * 0.0015), e.offsetX >= TL.padL ? tlT(e.offsetX) : P.time());
+  }, { passive: false });
+  tl.addEventListener('dblclick', () => { TL.v0 = 0; TL.v1 = S.dur; dirty(); });
+})();
+
+/* ---------- keyboard (NLE map) ---------- */
+let keyK = false;
+function installKeys() {
+  addEventListener('keyup', e => { if (e.key === 'k' || e.key === 'K') keyK = false; });
+  addEventListener('keydown', e => {
+    if (e.target.matches('input,select,textarea')) return;
+    const k = e.key;
+    if (k === ' ') { e.preventDefault(); P.playing ? P.pause() : P.play(); }
+    else if (k === 'l' || k === 'L') { if (keyK) stepFrame(1); else setShuttle(P.shuttle <= 0 ? 1 : Math.min(8, P.shuttle * 2)); }
+    else if (k === 'j' || k === 'J') { if (keyK) stepFrame(-1); else setShuttle(P.shuttle >= 0 ? -1 : Math.max(-8, P.shuttle * 2)); }
+    else if (k === 'k' || k === 'K') { keyK = true; P.pause(); }
+    else if (k === 'ArrowLeft') { e.preventDefault(); e.shiftKey ? seek(P.time() - 1) : stepFrame(-1); }
+    else if (k === 'ArrowRight') { e.preventDefault(); e.shiftKey ? seek(P.time() + 1) : stepFrame(1); }
+    else if (k === 'i' || k === 'I') $('#bIn').click();
+    else if (k === 'o' || k === 'O') $('#bOut').click();
+    else if (k === '[') seek(S.inT ?? 0);
+    else if (k === ']') seek(S.outT ?? S.dur);
+    else if (k === 'm' || k === 'M') addMark();
+    else if (k === ',' || k === '<') jumpMark(-1);
+    else if (k === '.' || k === '>') jumpMark(1);
+    else if (k === '=' || k === '+') zoomTL(0.5, P.time());
+    else if (k === '-' || k === '_') zoomTL(2, P.time());
+    else if (k === '\\') { TL.v0 = 0; TL.v1 = S.dur; dirty(); }
+    else if (k === 'Home') seek(0);
+    else if (k === 'End') seek(S.dur);
+    else if (k === 'f' || k === 'F') S.bbox && MapV.fit(S.bbox);
+    else if (k === 'Enter' && S.drawing) finishAOI();
+    else if (k === 'Escape' && S.drawing) { S.aoi = []; finishAOI(); }
+  });
+}
+
+/* ---------- bookmarks ---------- */
+S.marks = []; S.selMark = null;
+const markKey = () => 'miv-marks:' + S.name + ':' + S.size;
+function saveMarks() {
+  try { localStorage.setItem(markKey(), JSON.stringify(S.marks)); } catch (e) { }
+  if (typeof libMarksChanged === 'function') libMarksChanged();
+}
+function loadMarks(fromItem) {
+  S.marks = []; S.selMark = null;
+  if (fromItem && fromItem.length) S.marks = fromItem.map(m => ({ ...m }));
+  else try { const j = localStorage.getItem(markKey()); if (j) S.marks = JSON.parse(j); } catch (e) { }
+  buildMarksPane();
+}
+function addMark() {
+  if (!S.dur) return;
+  const t = P.time(), c = S.cur, st = c && c.st;
+  const m = { id: 'm' + Date.now().toString(36), t: +t.toFixed(4), tc: tcAt(t), label: 'Mark ' + (S.marks.length + 1), note: '', utc: st && isNum(st.ts) ? fmtUTC(st.ts) : null, lat: c && c.center && !c.center.horizon ? +c.center.lat.toFixed(7) : null, lon: c && c.center && !c.center.horizon ? +c.center.lon.toFixed(7) : null, created: new Date().toISOString() };
+  S.marks.push(m); S.marks.sort((a, b) => a.t - b.t); S.selMark = m.id;
+  saveMarks(); buildMarksPane(); status(m.label + ' at ' + m.tc + ' — annotate in MARKS'); dirty();
+}
+function jumpMark(d) {
+  if (!S.marks.length) return;
+  const t = P.time(); const m = d > 0 ? S.marks.find(m => m.t > t + 1e-3) : [...S.marks].reverse().find(m => m.t < t - 1e-3);
+  if (m) { P.pause(); S.selMark = m.id; seek(m.t); buildMarksPane(); }
+}
+function buildMarksPane() {
+  const p = $('#pMarks'); if (!p) return; p.innerHTML = '';
+  p.append(h('h3', null, 'Bookmarks'), h('div', { class: 'note' }, 'M adds a bookmark at the playhead; , and . jump between them. Bookmarks travel with the file into the library catalogue and EDL / GeoJSON exports.'),
+    h('div', { class: 'btns' }, h('button', { onclick: addMark, disabled: !S.dur }, '◆ Add at playhead'), h('button', { onclick: () => exportMarks('geojson'), disabled: !S.marks.length }, 'GeoJSON'), h('button', { onclick: () => exportMarks('csv'), disabled: !S.marks.length }, 'CSV')));
+  if (!S.marks.length) { p.append(h('p', { class: 'muted' }, 'No bookmarks yet.')); return; }
+  for (const m of S.marks) {
+    p.append(h('div', { class: 'mark' + (m.id === S.selMark ? ' sel' : '') },
+      h('div', { class: 'row' }, h('span', { class: 'accc' }, m.tc), h('span', { class: 'muted' }, m.utc ? m.utc.slice(11, 23) + 'Z' : ''), h('span', { style: 'margin-left:auto' }),
+        h('button', { onclick: () => { S.selMark = m.id; P.pause(); seek(m.t); buildMarksPane(); } }, 'Go'),
+        h('button', { onclick: () => { const nx = S.marks.find(x => x.t > m.t); S.inT = m.t; S.outT = nx ? nx.t : S.dur; buildExportPane(); dirty(); } , title: 'Clip from this bookmark to the next' }, 'Clip→'),
+        h('button', { onclick: () => { S.marks = S.marks.filter(x => x !== m); saveMarks(); buildMarksPane(); dirty(); } }, '×')),
+      h('input', { type: 'text', value: m.label, oninput: e => { m.label = e.target.value; saveMarks(); dirty(); } }),
+      h('textarea', { placeholder: 'note', oninput: e => { m.note = e.target.value; saveMarks(); } }, m.note || ''),
+      m.lat !== null ? h('div', { class: 'dim' }, 'centre ' + m.lat.toFixed(5) + ', ' + m.lon.toFixed(5)) : null));
+  }
+}
+function exportMarks(kind) {
+  const base = (S.name || 'misb').replace(/\.[^.]+$/, '');
+  if (kind === 'csv') download(base + '_marks.csv', ['t,timecode,utc,label,note,lat,lon', ...S.marks.map(m => [m.t, m.tc, m.utc || '', csvCell(m.label), csvCell(m.note || ''), m.lat ?? '', m.lon ?? ''].join(','))].join('\n'), 'text/csv');
+  else download(base + '_marks.geojson', JSON.stringify({ type: 'FeatureCollection', features: S.marks.map(m => ({ type: 'Feature', properties: { t: m.t, timecode: m.tc, utc: m.utc, label: m.label, note: m.note, source: S.name }, geometry: m.lat !== null ? { type: 'Point', coordinates: [m.lon, m.lat] } : null })) }), 'application/geo+json');
+}
+
+/* ---------- EDL / clip list ---------- */
+function edlEvents() {
+  if (S.inT !== null || S.outT !== null) return [{ a: S.inT ?? 0, b: S.outT ?? S.dur, note: 'clip' }];
+  if (S.results.length) return S.results.map((r, i) => ({ a: r.t0, b: Math.min(r.t1, S.dur), note: 'search segment #' + (i + 1) + (isNum(r.nMin) ? ' NIIRS ' + fx(r.nMin, 1) + '-' + fx(r.nMax, 1) : '') }));
+  return [{ a: 0, b: S.dur, note: 'whole file' }];
+}
+function exportEDL() {
+  const ev = edlEvents(), fps = S.fps || 30, df = Math.abs(fps - 29.97) < 0.02;
+  const reel = (S.name || 'AX').replace(/\.[^.]+$/, '').replace(/[^A-Za-z0-9]/g, '').slice(0, 8).toUpperCase() || 'AX';
+  const lines = ['TITLE: ' + (S.name || 'MIViewer'), 'FCM: ' + (df ? 'DROP FRAME' : 'NON-DROP FRAME'), ''];
+  let rec = 0;
+  ev.forEach((e, i) => {
+    const d = e.b - e.a;
+    lines.push(String(i + 1).padStart(3, '0') + '  ' + reel.padEnd(8) + ' V     C        ' + tcOf(e.a) + ' ' + tcOf(e.b) + ' ' + tcOf(3600 + rec) + ' ' + tcOf(3600 + rec + d));
+    lines.push('* FROM CLIP NAME: ' + S.name); lines.push('* COMMENT: ' + e.note);
+    for (const m of S.marks.filter(m => m.t >= e.a && m.t <= e.b)) lines.push('* LOC: ' + tcOf(3600 + rec + m.t - e.a) + ' ORANGE ' + m.label.replace(/\s+/g, '_'));
+    lines.push(''); rec += d;
+  });
+  download((S.name || 'misb').replace(/\.[^.]+$/, '') + '.edl', lines.join('\r\n'), 'text/plain');
+}
+function exportClipList() {
+  const ev = edlEvents();
+  download((S.name || 'misb').replace(/\.[^.]+$/, '') + '_cliplist.json', JSON.stringify({ generator: 'MIViewer ' + BUILD.ver, source: S.name, fps: S.fps, clips: ev.map(e => ({ in: +e.a.toFixed(4), out: +e.b.toFixed(4), tcIn: tcOf(e.a), tcOut: tcOf(e.b), note: e.note, utcIn: S.track && isNum(S.track.at(e.a).ts) ? fmtUTC(S.track.at(e.a).ts) : null })), marks: S.marks }, null, 1), 'application/json');
+}
+
+/* =====================================================================
+   PROVENANCE & GEOMETRY TIERS
+   Every geometry input is tagged:  m = measured (recorded in metadata)
+                                    d = derived  (computed from measured values)
+                                    a = assumed  (user setting, preset or fallback)
+   Tiers (by what the metadata itself carries, majority of records):
+     A  camera pointing + FOV        -> view box, ortho, NIIRS, AOI search
+     B  encoder frame centre/corners -> view box from corners, limited NIIRS
+     C  platform position only       -> track / time / area-of-ops search
+     D  no position                  -> playback and catalogue only
+   "Assume sensor geometry" can lift C to an assumed A; everything it
+   touches is flagged 'a' and carried into the map, HUD and exports.
+   ===================================================================== */
+Object.assign(CFG, { assumeOn: false, assumePitch: -90, assumeYaw: 'heading', assumeYawVal: 0, assumeHfov: 40, maxLook: 60 });
+const PROV_LABEL = { m: 'measured', d: 'derived', a: 'assumed' };
+const TIER_TEXT = { A: 'full view geometry', B: 'encoder corners only', C: 'platform position only', D: 'no position' };
+
+function mat2ypr(M) { return [Math.atan2(M[3], M[0]) * R2D, Math.asin(clamp(-M[6], -1, 1)) * R2D, Math.atan2(M[7], M[8]) * R2D]; }
+function m3t(A) { return [A[0], A[3], A[6], A[1], A[4], A[7], A[2], A[5], A[8]]; }
+
+/* fill missing camera geometry with assumptions (reversible) */
+function applyAssumptions(recs) {
+  for (const r of recs) if (r.assumedKeys) { for (const k of r.assumedKeys) { delete r.f[k]; if (r.prov) delete r.prov[k]; } r.assumedKeys = null; }
+  if (!CFG.assumeOn) return 0;
+  let n = 0, lastCourse = null;
+  const sorted = recs.slice().sort((a, b) => a.t - b.t);
+  sorted.forEach((r, i) => {
+    const f = r.f; if (!isNum(f.sensLat) || !isNum(f.sensLon)) return;
+    // course over ground from neighbours
+    const a = sorted[Math.max(0, i - 3)].f, b = sorted[Math.min(sorted.length - 1, i + 3)].f;
+    if (isNum(a.sensLat) && isNum(b.sensLat)) { const dn = (b.sensLat - a.sensLat) * mpdLat(f.sensLat), de = (b.sensLon - a.sensLon) * mpdLon(f.sensLat); if (Math.hypot(dn, de) > 2) lastCourse = wrap360(Math.atan2(de, dn) * R2D); }
+    const keys = [];
+    r.prov = r.prov || {};
+    if (!isNum(f.relEl) || !isNum(f.relAz)) {
+      const yaw = CFG.assumeYaw === 'fixed' ? CFG.assumeYawVal : CFG.assumeYaw === 'course' ? (lastCourse ?? f.platHdg ?? 0) : (isNum(f.platHdg) ? f.platHdg : (lastCourse ?? 0));
+      const Rabs = m3(m3(rz(yaw * D2R), ry(CFG.assumePitch * D2R)), rx(0));
+      if (isNum(f.platHdg)) {
+        const Pm = m3(m3(rz(f.platHdg * D2R), ry((f.platPitch || 0) * D2R)), rx((f.platRoll || 0) * D2R));
+        const [az, el, ro] = mat2ypr(m3(m3t(Pm), Rabs));
+        f.relAz = wrap360(az); f.relEl = el; f.relRoll = wrap360(ro); keys.push('relAz', 'relEl', 'relRoll');
+      } else { f.platHdg = wrap360(yaw); f.platPitch = 0; f.platRoll = 0; f.relAz = 0; f.relEl = CFG.assumePitch; f.relRoll = 0; keys.push('platHdg', 'platPitch', 'platRoll', 'relAz', 'relEl', 'relRoll'); }
+    }
+    if (!isNum(f.hfov) || !(f.hfov > 0)) { f.hfov = CFG.assumeHfov; keys.push('hfov'); }
+    if (keys.length) { r.assumedKeys = keys; keys.forEach(k => r.prov[k] = 'a'); n++; }
+  });
+  return n;
+}
+
+function recTier(r) {
+  const f = r.f, p = r.prov || {}, as = new Set(r.assumedKeys || []);
+  const pointing = isNum(f.relEl) && isNum(f.platHdg) && !as.has('relEl') && !as.has('platHdg') && isNum(f.sensLat);
+  const fov = isNum(f.hfov) && f.hfov > 0 && !as.has('hfov');
+  if (pointing && fov) return p.hfov === 'a' ? 'A~' : 'A';
+  if (f.corners || (isNum(f.fcLat) && isNum(f.fcLon))) return 'B';
+  if (isNum(f.sensLat) && isNum(f.sensLon)) return 'C';
+  return 'D';
+}
+function computeTier(recsIn) {
+  const recs = recsIn || S.klv; if (!recs.length) return { base: 'D', eff: 'D', fovAssumed: false, counts: {} };
+  const counts = { A: 0, 'A~': 0, B: 0, C: 0, D: 0 };
+  recs.forEach(r => counts[recTier(r)]++);
+  const n = recs.length, half = n / 2;
+  let base = counts.A + counts['A~'] >= half ? 'A' : counts.A + counts['A~'] + counts.B >= half ? 'B' : counts.A + counts['A~'] + counts.B + counts.C >= half ? 'C' : 'D';
+  const fovAssumed = base === 'A' && counts['A~'] > counts.A;
+  const assumedN = recs.filter(r => r.assumedKeys && r.assumedKeys.length).length;
+  const eff = CFG.assumeOn && assumedN >= half && (base === 'C' || base === 'B') ? 'A' : base;
+  return { base, eff, fovAssumed, assumed: assumedN, counts, n };
+}
+function tierLabel(T) {
+  if (!T) return '–';
+  const asm = T.eff !== T.base ? ' (assumed geometry)' : T.fovAssumed ? ' (FOV assumed)' : '';
+  return 'Tier ' + T.base + (T.eff !== T.base ? ' → ' + T.eff : '') + ' · ' + TIER_TEXT[T.eff] + asm;
+}
+function updateTierBadge() {
+  let b = $('#tierBadge');
+  if (!b) { b = h('span', { id: 'tierBadge', class: 'tier' }); $('#fileName').after(b); }
+  const T = S.tier;
+  if (!T || !S.klv.length) { b.style.display = 'none'; return; }
+  b.style.display = ''; b.className = 'tier ' + T.eff + (T.eff !== T.base || T.fovAssumed ? ' pa' : '');
+  b.textContent = 'TIER ' + (T.eff !== T.base ? T.base + '→' + T.eff : T.base) + (T.eff !== T.base || T.fovAssumed ? '*' : '');
+  b.title = tierLabel(T);
+}
+const geomOK = () => S.tier && (S.tier.eff === 'A' || S.tier.eff === 'B');
+
+/* provenance of one interpolated state + its footprint */
+function stateProv(st) {
+  const r = S.track && st && st._i !== undefined ? S.track.recs[st._i] : null;
+  return (r && r.prov) || {};
+}
+function geomProv(st, kind) {
+  if (!kind) return null;
+  if (kind === 'corners') return { level: 'm', notes: ['encoder corner points (KLV)'] };
+  const p = stateProv(st), notes = ['sensor model'];
+  let level = 'd';
+  const chk = (k, lbl) => { if (p[k] === 'a') { level = 'a'; notes.push(lbl + ' assumed'); } };
+  chk('relEl', 'camera pointing'); chk('platHdg', 'heading'); chk('hfov', 'HFOV'); chk('sensAlt', 'altitude');
+  if (p.hfov === 'd') notes.push('HFOV from focal length');
+  if (!(isNum(st.vfov) && st.vfov > 0)) notes.push('VFOV from aspect');
+  if (DEM.active()) notes.push('terrain: DEM');
+  else if (isNum(st.fcElev) || isNum(st.fcHAE)) notes.push('ground: KLV frame-centre elevation');
+  else { level = 'a'; notes.push('ground: flat ' + CFG.flatElev + ' m'); }
+  return { level, notes };
+}
+function provMark(level) { return level === 'a' ? '<span class="pa" title="assumed">ᵃ</span>' : level === 'd' ? '<span class="pd" title="derived">ᵈ</span>' : ''; }
+
+/* canvas helpers for confidence styling */
+let _hatch = null;
+function hatchPattern(g) {
+  if (_hatch) return _hatch;
+  const c = document.createElement('canvas'); c.width = c.height = 8; const x = c.getContext('2d');
+  x.strokeStyle = 'rgba(227,181,95,.55)'; x.lineWidth = 1; x.beginPath(); x.moveTo(0, 8); x.lineTo(8, 0); x.stroke();
+  _hatch = g.createPattern(c, 'repeat'); return _hatch;
+}
+function provStroke(g, level) { g.setLineDash(level === 'a' ? [2, 3] : level === 'd' ? [7, 4] : []); }
+
+/* tier C without assumptions: possible-coverage disc around the platform */
+function drawPossibleCoverage(g, st) {
+  const alt = sensAltMSL(st); if (!isNum(alt) || !isNum(st.sensLat)) return;
+  const agl = Math.max(10, alt - groundElev(st.sensLat, st.sensLon, st));
+  const r = Math.min(CFG.maxRange, agl * Math.tan(CFG.maxLook * D2R));
+  const [x, y] = MapV.toScr(st.sensLat, st.sensLon), [x2] = MapV.toScr(st.sensLat, st.sensLon + r / mpdLon(st.sensLat));
+  g.save(); g.beginPath(); g.arc(x, y, Math.abs(x2 - x), 0, 7); g.fillStyle = hatchPattern(g); g.fill();
+  g.strokeStyle = 'rgba(227,181,95,.8)'; g.setLineDash([2, 3]); g.lineWidth = 1; g.stroke(); g.restore();
+}
+
+/* =====================================================================
+   LIBRARY — static STAC catalogue written into the user's own folder
+     <library>/.miviewer/catalog.json        STAC Collection (extent, summaries, item links)
+     <library>/.miviewer/items/<id>.json     STAC Item per video (coverage geometry, times,
+                                             platform, tier, provenance, NIIRS, bookmarks…)
+     <library>/.miviewer/thumbs/<id>.jpg     thumbnail asset (separate file, never base64)
+   Folder access: File System Access API (read/write, remembered between
+   sessions) or, where unavailable, a read-only folder pick indexed in memory
+   with the catalogue exported as a STAC ItemCollection.
+   ===================================================================== */
+const LIB = { dir: null, saved: null, name: '', mode: null, items: new Map(), files: new Map(), sel: null, thumbs: new Map(), busy: false, map: null, pending: null, F: { q: '', from: '', to: '', tier: '', minN: '', inView: false } };
+const MEDIA_RE = /\.(ts|m2ts|mts|mpg|mpeg|trp|mp4|m4v|mov)$/i, SIDE_RE = /\.(srt|csv|klv|bin)$/i;
+const CLASS_RANK = { 'UNCLASSIFIED': 0, 'RESTRICTED': 1, 'CONFIDENTIAL': 2, 'SECRET': 3, 'TOP SECRET': 4 };
+
+/* ---------- small persistence helpers (IndexedDB may be unavailable on file://) ---------- */
+function idbOpen() { return new Promise((res, rej) => { const r = indexedDB.open('miviewer', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+async function idbSet(k, v) { try { const db = await idbOpen(); await new Promise((res, rej) => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(v, k); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); } catch (e) { } }
+async function idbGet(k) { try { const db = await idbOpen(); return await new Promise((res, rej) => { const r = db.transaction('kv').objectStore('kv').get(k); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); } catch (e) { return null; } }
+
+/* ---------- folder helpers ---------- */
+async function* walkDir(dir, prefix = '') {
+  for await (const [name, hd] of dir.entries()) {
+    if (name.startsWith('.')) continue;
+    if (hd.kind === 'directory') yield* walkDir(hd, prefix + name + '/');
+    else yield { path: prefix + name, name, handle: hd };
+  }
+}
+async function fsDir(root, path, create) { let d = root; for (const p of path.split('/').filter(Boolean)) d = await d.getDirectoryHandle(p, { create }); return d; }
+async function fsWrite(root, path, data) { const parts = path.split('/'); const d = await fsDir(root, parts.slice(0, -1).join('/'), true); const fh = await d.getFileHandle(parts.pop(), { create: true }); const w = await fh.createWritable(); await w.write(data); await w.close(); }
+async function fsRead(root, path) { const parts = path.split('/'); const d = await fsDir(root, parts.slice(0, -1).join('/'), false); return (await d.getFileHandle(parts.pop())).getFile(); }
+
+/* ---------- indexing ---------- */
+const libId = path => path.replace(/\.[^.\/]+$/, '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 120) || 'item';
+async function quickHash(file) {
+  const n = 1 << 20, sz = file.size, parts = [file.slice(0, n), file.slice(Math.max(0, sz / 2 - n / 2), sz / 2 + n / 2), file.slice(Math.max(0, sz - n))];
+  const bufs = await Promise.all(parts.map(b => b.arrayBuffer())), all = new Uint8Array(bufs.reduce((s, b) => s + b.byteLength, 0) + 8);
+  let o = 0; for (const b of bufs) { all.set(new Uint8Array(b), o); o += b.byteLength; } new DataView(all.buffer).setFloat64(o, sz);
+  if (window.crypto && crypto.subtle) { const d = await crypto.subtle.digest('SHA-256', all); return 'qsha256:' + [...new Uint8Array(d)].slice(0, 16).map(x => x.toString(16).padStart(2, '0')).join(''); }
+  let hh = 0x811c9dc5; for (const x of all) { hh ^= x; hh = Math.imul(hh, 0x01000193) >>> 0; } return 'qfnv32:' + hh.toString(16);
+}
+function convexHull(P) {
+  const pts = P.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]); if (pts.length < 3) return pts;
+  const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]), lo = [], up = [];
+  for (const p of pts) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (const p of pts.slice().reverse()) { while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+  return lo.slice(0, -1).concat(up.slice(0, -1));
+}
+const csvSplit = l => { const o = []; let cur = '', q = false; for (let i = 0; i < l.length; i++) { const ch = l[i]; if (q) { if (ch === '"' && l[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; } else if (ch === '"') q = true; else if (ch === ',') { o.push(cur); cur = ''; } else cur += ch; } o.push(cur); return o; };
+async function sidecarRecs(file) {
+  const n = file.name.toLowerCase();
+  if (/\.srt$/.test(n)) return parseDJISrt(await file.text());
+  if (/\.csv$/.test(n)) { const L = (await file.text()).split(/\r?\n/).filter(x => x.trim()); const hdr = csvSplit(L[0]); return isFlightLogHeader(hdr) ? parseFlightLogCSV(L.slice(1).map(csvSplit), hdr).recs : []; }
+  if (/\.(klv|bin)$/.test(n)) { const r = scanKLV(new Uint8Array(await file.arrayBuffer())); const recs = r.packets.map(k => makeRec(k.raw, null, k.pos, 'sidecar')); assignTimes(recs, 1, 0, []); return recs; }
+  return [];
+}
+function grabFrame(url, t) {
+  return new Promise(res => {
+    const v = document.createElement('video'); v.muted = true; v.preload = 'auto'; let done = false;
+    const fin = b => { if (done) return; done = true; v.removeAttribute('src'); v.load(); res(b); };
+    v.onloadeddata = () => { v.currentTime = Math.min(t, (v.duration || 1) * 0.5); };
+    v.onseeked = () => { try { const c = document.createElement('canvas'); c.width = 192; c.height = Math.round(192 * (v.videoHeight || 9) / (v.videoWidth || 16)); c.getContext('2d').drawImage(v, 0, 0, c.width, c.height); c.toBlob(b => fin(b), 'image/jpeg', 0.75); } catch (e) { fin(null); } };
+    v.onerror = () => fin(null); setTimeout(() => fin(null), 12000); v.src = url;
+  });
+}
+async function catalogItem(file, path, sidecars, prev) {
+  const id = libId(path), now = new Date().toISOString();
+  const props = { title: file.name, created: prev ? prev.properties.created : now, updated: now, 'miv:path': path, 'miv:sidecars': sidecars.map(s => s._path || s.name), 'file:size': file.size, 'miv:file_mtime': file.lastModified, 'miv:bookmarks': prev ? prev.properties['miv:bookmarks'] || [] : [] };
+  const item = { type: 'Feature', stac_version: '1.0.0', stac_extensions: [], id, collection: 'miviewer-library', geometry: null, bbox: undefined, properties: props, links: [{ rel: 'root', href: '../catalog.json', type: 'application/json' }, { rel: 'parent', href: '../catalog.json', type: 'application/json' }, { rel: 'collection', href: '../catalog.json', type: 'application/json' }, { rel: 'self', href: './' + id + '.json', type: 'application/geo+json' }], assets: {} };
+  item.assets.video = { href: '../../' + path.split('/').map(encodeURIComponent).join('/'), type: /\.(mp4|m4v|mov)$/i.test(path) ? 'video/mp4' : 'video/mp2t', roles: ['data'], title: file.name };
+  sidecars.forEach((s, i) => { item.assets['sidecar' + (i || '')] = { href: '../../' + (s._path || s.name).split('/').map(encodeURIComponent).join('/'), roles: ['metadata'], title: s.name }; });
+  let thumbBlob = null;
+  try {
+    props['miv:hash'] = await quickHash(file);
+    if (file.size > 3.5e9) throw new Error('file too large to index in the browser (> 3.5 GB)');
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const R = isMP4Buf(buf) ? extractMP4(buf) : await extractTS(buf, { remux: true });
+    let recs = R.klv, src = R.metaSource;
+    for (const sc of sidecars) { if (recs.length) break; try { recs = await sidecarRecs(sc); if (recs.length) src = (recs[0].f.src || 'sidecar') + ' (' + sc.name + ')'; } catch (e) { } }
+    const v = R.video, fr = R.frames, fps = fr.length > 1 ? 1 / median(fr.slice(1, 600).map((x, i) => x - fr[i]).filter(x => x > 0)) : null;
+    const dur = Math.max(fr.length ? fr[fr.length - 1] : 0, recs.length ? recs[recs.length - 1].t : 0);
+    Object.assign(props, { 'miv:container': R.kind, 'miv:codec': v ? v.codec : null, 'miv:width': v ? v.width || null : null, 'miv:height': v ? v.height || null : null, 'miv:frames': fr.length, 'miv:fps': fps ? +fps.toFixed(3) : null, 'miv:duration_s': +dur.toFixed(3), 'miv:metadata_source': src || null, 'miv:metadata_records': recs.length, 'miv:checksum_fail': recs.filter(r => r.csOk === false).length, 'miv:warnings': R.warnings.slice(0, 8) });
+    if (recs.length) {
+      applyDroneAltitude(recs);
+      const T = computeTier(recs), track = new Track(recs);
+      props['miv:tier'] = T.base; props['miv:tier_note'] = tierLabel(T);
+      const f0 = recs.find(r => r.f.platform) || recs[0], ts = recs.map(r => r.f.ts).filter(isNum);
+      props.platform = f0.f.platform || null; props.instruments = (recs.find(r => r.f.sensor) || {}).f ? [recs.find(r => r.f.sensor).f.sensor] : [];
+      props['miv:mission'] = (recs.find(r => r.f.mission) || { f: {} }).f.mission || null;
+      const sec = recs.find(r => r.f.security); if (sec) { props['miv:classification'] = sec.f.security.classification || null; props['miv:security'] = sec.f.security; }
+      if (ts.length && !recs[0].f.localTime) { props.start_datetime = new Date(Math.min(...ts) / 1000).toISOString(); props.end_datetime = new Date(Math.max(...ts) / 1000).toISOString(); props.datetime = null; props['miv:time_source'] = 'metadata'; }
+      // geometry: track + coverage from footprints (catalogue reflects measured/derived geometry only — no assumptions)
+      IMGSZ = [v && v.width || CFG.imgW, v && v.height || CFG.imgH];
+      const pts = [], trk = [], nv = [], gs = [], step = Math.max(0.5, dur / 200);
+      const provs = new Set();
+      for (let t = Math.max(0, track.t0); t <= Math.min(dur, track.t1) + 1e-6; t += step) {
+        const st = track.at(t);
+        if (isNum(st.sensLat)) trk.push([+st.sensLon.toFixed(7), +st.sensLat.toFixed(7)]);
+        const fp = footprint(st, 1);
+        if (fp && fp.pts.every(p => !p.horizon)) { fp.pts.forEach(p => pts.push([+p.lon.toFixed(7), +p.lat.toFixed(7)])); const gp = geomProv(st, fp.kind); if (gp) provs.add(gp.level); const c = fp.center; if (c && !c.horizon) { const g = viewGeom(st, c.lat, c.lon, c.h); if (g && isNum(g.niirs)) { nv.push(g.niirs); gs.push(g.gsd); } } }
+      }
+      IMGSZ = null;
+      const hull = convexHull(pts);
+      if (hull.length >= 3) { item.geometry = { type: 'Polygon', coordinates: [[...hull, hull[0]]] }; props['miv:geometry_kind'] = 'coverage (convex hull of view boxes)'; }
+      else if (trk.length >= 2) { item.geometry = { type: 'LineString', coordinates: trk }; props['miv:geometry_kind'] = 'platform track'; }
+      else if (trk.length) { item.geometry = { type: 'Point', coordinates: trk[0] }; props['miv:geometry_kind'] = 'platform position'; }
+      const dec = Math.max(1, Math.ceil(trk.length / 300)); props['miv:track'] = trk.filter((_, i) => i % dec === 0);
+      props['miv:geometry_provenance'] = provs.has('a') ? 'assumed' : provs.has('d') ? 'derived' : provs.has('m') ? 'measured' : null;
+      if (nv.length) { props['miv:niirs_min'] = +Math.min(...nv).toFixed(2); props['miv:niirs_max'] = +Math.max(...nv).toFixed(2); props.gsd = +Math.min(...gs).toFixed(3); }
+    } else { props['miv:tier'] = 'D'; props['miv:tier_note'] = 'Tier D · no position'; }
+    if (!props.start_datetime) { props.datetime = new Date(file.lastModified).toISOString(); props['miv:time_source'] = 'file modified time'; }
+    // thumbnail
+    let url = null, own = false;
+    if (R.vidBlob) { url = URL.createObjectURL(R.vidBlob); own = true; } else if (R.kind === 'mp4') { url = URL.createObjectURL(file); own = true; }
+    if (url) { thumbBlob = await grabFrame(url, Math.min(5, dur * 0.1)); if (own) URL.revokeObjectURL(url); }
+  } catch (e) { props['miv:error'] = String(e.message || e); if (!props.datetime && !props.start_datetime) props.datetime = new Date(file.lastModified).toISOString(); props['miv:tier'] = props['miv:tier'] || 'D'; }
+  if (item.geometry) { const c = JSON.stringify(item.geometry.coordinates).match(/-?\d+\.?\d*/g).map(Number); const xs = c.filter((_, i) => i % 2 === 0), ys = c.filter((_, i) => i % 2 === 1); item.bbox = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]; } else delete item.bbox;
+  if (thumbBlob) item.assets.thumbnail = { href: '../thumbs/' + id + '.jpg', type: 'image/jpeg', roles: ['thumbnail'] };
+  if (!props.start_datetime && props.datetime === undefined) props.datetime = null;
+  return { item, thumbBlob };
+}
+function collectionJSON() {
+  const items = [...LIB.items.values()], bb = items.filter(i => i.bbox).map(i => i.bbox);
+  const times = items.flatMap(i => [i.properties.start_datetime || i.properties.datetime, i.properties.end_datetime || i.properties.datetime]).filter(Boolean).sort();
+  const cls = items.map(i => i.properties['miv:classification']).filter(Boolean);
+  const top = cls.sort((a, b) => (CLASS_RANK[b] ?? -1) - (CLASS_RANK[a] ?? -1))[0] || null;
+  const uniq = k => [...new Set(items.map(i => i.properties[k]).filter(Boolean))];
+  return {
+    type: 'Collection', stac_version: '1.0.0', stac_extensions: [], id: 'miviewer-library', title: LIB.name || 'Motion imagery library', description: 'Motion imagery library indexed by MIViewer ' + BUILD.ver + '. Items describe video files in this folder; geometry is the coverage of computed view boxes (or the platform track where the metadata has no sensor geometry).',
+    license: 'proprietary', keywords: ['motion imagery', 'MISB', 'ST 0601', 'FMV'],
+    extent: { spatial: { bbox: [bb.length ? [Math.min(...bb.map(b => b[0])), Math.min(...bb.map(b => b[1])), Math.max(...bb.map(b => b[2])), Math.max(...bb.map(b => b[3]))] : [-180, -90, 180, 90]] }, temporal: { interval: [[times[0] || null, times[times.length - 1] || null]] } },
+    summaries: { platform: uniq('platform'), 'miv:tier': uniq('miv:tier'), 'miv:classification': uniq('miv:classification') },
+    'miv:classification': top, 'miv:generator': 'MIViewer ' + BUILD.ver + ' build ' + BUILD.build, 'miv:updated': new Date().toISOString(),
+    links: [{ rel: 'root', href: './catalog.json', type: 'application/json' }, { rel: 'self', href: './catalog.json', type: 'application/json' }, ...items.map(i => ({ rel: 'item', href: './items/' + i.id + '.json', type: 'application/geo+json', title: i.properties.title }))],
+  };
+}
+
+/* ---------- connect / scan ---------- */
+async function libConnect(dir, mode) {
+  LIB.dir = dir; LIB.mode = mode; LIB.name = dir ? dir.name : LIB.name; LIB.items.clear(); LIB.thumbs.forEach(u => URL.revokeObjectURL(u)); LIB.thumbs.clear(); LIB.sel = null;
+  if (mode === 'fs') {
+    try {
+      const cat = JSON.parse(await (await fsRead(dir, '.miviewer/catalog.json')).text());
+      for (const l of (cat.links || []).filter(l => l.rel === 'item')) { try { const it = JSON.parse(await (await fsRead(dir, '.miviewer/items/' + l.href.replace(/^\.\/items\//, ''))).text()); LIB.items.set(it.id, it); } catch (e) { } }
+    } catch (e) { /* new library */ }
+  }
+  renderLib();
+  await libScan();
+}
+async function libScan() {
+  if (LIB.busy) return; LIB.busy = true;
+  try {
+    const found = [];
+    if (LIB.mode === 'fs') { for await (const e of walkDir(LIB.dir)) found.push(e); }
+    else for (const [path, file] of LIB.files) found.push({ path, name: file.name, file });
+    const media = found.filter(e => MEDIA_RE.test(e.name)), sides = found.filter(e => SIDE_RE.test(e.name));
+    const seen = new Set();
+    for (const [k, e] of media.entries()) {
+      const file = e.file || await e.handle.getFile(), id = libId(e.path); seen.add(id);
+      const prev = LIB.items.get(id);
+      if (prev && prev.properties['file:size'] === file.size && prev.properties['miv:file_mtime'] === file.lastModified && !prev.properties['miv:error']) { if (prev.properties['miv:missing']) { prev.properties['miv:missing'] = false; await libSaveItem(prev); } continue; }
+      libStatus('Indexing ' + (k + 1) + ' / ' + media.length + ': ' + e.name + '…');
+      const base = e.path.replace(/\.[^.\/]+$/, '').toLowerCase();
+      const scs = [];
+      for (const s of sides) if (s.path.replace(/\.[^.\/]+$/, '').toLowerCase() === base) { const f = s.file || await s.handle.getFile(); f._path = s.path; scs.push(f); }
+      const { item, thumbBlob } = await catalogItem(file, e.path, scs, prev);
+      LIB.items.set(item.id, item);
+      if (thumbBlob) { if (LIB.thumbs.has(item.id)) URL.revokeObjectURL(LIB.thumbs.get(item.id)); LIB.thumbs.set(item.id, URL.createObjectURL(thumbBlob)); }
+      if (LIB.mode === 'fs') { if (thumbBlob) await fsWrite(LIB.dir, '.miviewer/thumbs/' + item.id + '.jpg', thumbBlob); await libSaveItem(item, true); }
+      renderLib();
+      await new Promise(r => setTimeout(r));
+    }
+    for (const it of LIB.items.values()) if (!seen.has(it.id) && !it.properties['miv:missing']) { it.properties['miv:missing'] = true; await libSaveItem(it, true); }
+    if (LIB.mode === 'fs') await fsWrite(LIB.dir, '.miviewer/catalog.json', JSON.stringify(collectionJSON(), null, 1));
+    libStatus(LIB.items.size + ' item(s) · ' + (LIB.mode === 'fs' ? 'catalogue written to ' + LIB.name + '/.miviewer/' : 'in-memory (export the catalogue to keep it)'));
+  } catch (e) { console.error(e); libStatus('Library error: ' + e.message); }
+  LIB.busy = false; renderLib(); if (!LIB.sel) libFitAll();
+}
+async function libSaveItem(item, noCollection) {
+  if (LIB.mode !== 'fs') return;
+  await fsWrite(LIB.dir, '.miviewer/items/' + item.id + '.json', JSON.stringify(item, null, 1));
+  if (!noCollection) await fsWrite(LIB.dir, '.miviewer/catalog.json', JSON.stringify(collectionJSON(), null, 1));
+}
+async function libThumb(it) {
+  if (LIB.thumbs.has(it.id)) return LIB.thumbs.get(it.id);
+  if (LIB.mode !== 'fs' || !it.assets.thumbnail) return null;
+  try { const u = URL.createObjectURL(await fsRead(LIB.dir, '.miviewer/thumbs/' + it.id + '.jpg')); LIB.thumbs.set(it.id, u); return u; } catch (e) { return null; }
+}
+let libSaveTimer = null;
+function libMarksChanged() {
+  if (!S.libItemId || !LIB.items.has(S.libItemId)) return;
+  const it = LIB.items.get(S.libItemId); it.properties['miv:bookmarks'] = S.marks.map(m => ({ ...m })); it.properties.updated = new Date().toISOString();
+  clearTimeout(libSaveTimer); libSaveTimer = setTimeout(() => libSaveItem(it).catch(e => console.warn(e)), 600);
+}
+async function libOpenItem(id) {
+  const it = LIB.items.get(id); if (!it) return;
+  const path = it.properties['miv:path'], scp = it.properties['miv:sidecars'] || [];
+  let file = null, scs = [];
+  try {
+    if (LIB.mode === 'fs') { file = await fsRead(LIB.dir, path); for (const p of scp) try { scs.push(await fsRead(LIB.dir, p)); } catch (e) { } }
+    else { file = LIB.files.get(path) || null; scs = scp.map(p => LIB.files.get(p)).filter(Boolean); }
+  } catch (e) { file = null; }
+  if (!file) { libStatus('“' + it.properties.title + '” is not available — reconnect or re-select the library folder'); return; }
+  LIB.pending = { id, marks: it.properties['miv:bookmarks'] || [] };
+  closeLib();
+  await openFiles([file, ...scs]);
+}
+
+/* ---------- UI ---------- */
+function libStatus(m) { const e = $('#libStat'); if (e) e.textContent = m; }
+function libFiltered() {
+  const F = LIB.F, q = F.q.toLowerCase();
+  let list = [...LIB.items.values()];
+  if (q) list = list.filter(i => [i.properties.title, i.properties.platform, i.properties['miv:mission'], i.properties['miv:path'], ...(i.properties['miv:bookmarks'] || []).map(b => b.label + ' ' + b.note)].join(' ').toLowerCase().includes(q));
+  if (F.tier) list = list.filter(i => (i.properties['miv:tier'] || 'D') <= F.tier);
+  if (F.minN !== '') list = list.filter(i => isNum(i.properties['miv:niirs_max']) && i.properties['miv:niirs_max'] >= +F.minN);
+  const t = i => i.properties.start_datetime || i.properties.datetime || '';
+  if (F.from) list = list.filter(i => t(i) >= F.from); if (F.to) list = list.filter(i => t(i) <= F.to + 'T23:59:59Z');
+  if (F.inView && LIB.map) { const [la0, lo0] = LIB.map.fromScr(0, LIB.map.H), [la1, lo1] = LIB.map.fromScr(LIB.map.W, 0); list = list.filter(i => i.bbox && i.bbox[2] >= lo0 && i.bbox[0] <= lo1 && i.bbox[3] >= la0 && i.bbox[1] <= la1); }
+  return list.sort((a, b) => t(b).localeCompare(t(a)));
+}
+function renderLib() {
+  if (!$('#lib') || !$('#lib').classList.contains('on')) return;
+  const list = libFiltered(), box = $('#libList'); box.innerHTML = '';
+  const cls = [...LIB.items.values()].map(i => i.properties['miv:classification']).filter(Boolean).sort((a, b) => (CLASS_RANK[b] ?? -1) - (CLASS_RANK[a] ?? -1))[0];
+  $('#libClass').textContent = cls ? 'HIGHEST MARKING IN LIBRARY (metadata): ' + cls : ''; $('#libClass').style.display = cls ? '' : 'none';
+  $('#libName').textContent = LIB.mode ? LIB.name + (LIB.mode === 'mem' ? ' (read-only, in memory)' : '') : 'no library connected';
+  $('#libCount').textContent = list.length + ' of ' + LIB.items.size;
+  for (const it of list) {
+    const P2 = it.properties, img = h('img', { width: 96, height: 54, alt: '' });
+    libThumb(it).then(u => { if (u) img.src = u; });
+    const row = h('div', { class: 'res' + (it.id === LIB.sel ? ' sel' : ''), onclick: () => { LIB.sel = it.id; if (it.bbox) LIB.map.fit([it.bbox[1], it.bbox[0], it.bbox[3], it.bbox[2]], 60); renderLib(); }, ondblclick: () => libOpenItem(it.id) },
+      h('div', { style: 'display:grid;grid-template-columns:96px 1fr;gap:8px' }, img,
+        h('div', null,
+          h('div', { class: 'h' }, h('span', null, P2.title), h('span', { class: 'tier ' + (P2['miv:tier'] || 'D') }, P2['miv:tier'] || 'D')),
+          h('div', { class: 'muted' }, (P2.start_datetime ? P2.start_datetime.replace('T', ' ').slice(0, 19) + 'Z' : (P2.datetime || '').slice(0, 10) + ' (file)') + ' · ' + fmtT(P2['miv:duration_s'] || 0) + (P2.platform ? ' · ' + P2.platform : '')),
+          h('div', { class: 'dim' }, [isNum(P2['miv:niirs_max']) ? 'NIIRS ' + P2['miv:niirs_min'] + '–' + P2['miv:niirs_max'] : null, P2['miv:geometry_provenance'] ? 'geometry ' + P2['miv:geometry_provenance'] : null, (P2['miv:bookmarks'] || []).length ? (P2['miv:bookmarks'].length + ' bookmark(s)') : null, P2['miv:classification'] || null].filter(Boolean).join(' · ')),
+          P2['miv:missing'] ? h('div', { class: 'badc' }, 'file missing from folder') : P2['miv:error'] ? h('div', { class: 'badc' }, P2['miv:error']) : null,
+          h('div', { class: 'btns' }, h('button', { onclick: e => { e.stopPropagation(); libOpenItem(it.id); }, disabled: !!P2['miv:missing'] }, 'Open'), h('span', { class: 'dim' }, P2['miv:path'])))));
+    box.append(row);
+  }
+  if (LIB.map) LIB.map.render();
+}
+function libOverlay(g) {
+  const list = libFiltered(), M = LIB.map;
+  for (const it of list) {
+    const sel = it.id === LIB.sel, geo = it.geometry; if (!geo) continue;
+    const path = coords => { g.beginPath(); coords.forEach((c, i) => { const [x, y] = M.toScr(c[1], c[0]); i ? g.lineTo(x, y) : g.moveTo(x, y); }); };
+    if (geo.type === 'Polygon') { path(geo.coordinates[0]); g.closePath(); g.fillStyle = sel ? 'rgba(240,160,48,.25)' : 'rgba(240,160,48,.08)'; g.fill(); g.strokeStyle = sel ? COL.acc : 'rgba(240,160,48,.6)'; g.lineWidth = sel ? 2 : 1; provStroke(g, it.properties['miv:geometry_provenance'] === 'assumed' ? 'a' : 'm'); g.stroke(); g.setLineDash([]); }
+    const trk = it.properties['miv:track'] || (geo.type === 'LineString' ? geo.coordinates : null);
+    if (trk && trk.length > 1) { path(trk); g.strokeStyle = sel ? '#fff' : 'rgba(230,236,240,.55)'; g.lineWidth = sel ? 1.6 : 1; g.stroke(); }
+    else if (geo.type === 'Point') { const [x, y] = M.toScr(geo.coordinates[1], geo.coordinates[0]); g.fillStyle = sel ? COL.acc : '#cdd3d9'; g.beginPath(); g.arc(x, y, 4, 0, 7); g.fill(); }
+  }
+}
+function openLib() {
+  $('#lib').classList.add('on');
+  if (!LIB.map) {
+    LIB.map = makeMap($('#libMap'), $('#libAttr')); LIB.map.overlay = libOverlay;
+    const cv = $('#libMap'); let drag = null, moved = false;
+    cv.addEventListener('pointerdown', e => { drag = [e.clientX, e.clientY]; moved = false; cv.setPointerCapture(e.pointerId); });
+    cv.addEventListener('pointermove', e => { if (!drag) return; const dx = e.clientX - drag[0], dy = e.clientY - drag[1]; if (Math.abs(dx) + Math.abs(dy) > 3) moved = true; if (moved) { LIB.map.pan(dx, dy); drag = [e.clientX, e.clientY]; if (LIB.F.inView) renderLib(); } });
+    cv.addEventListener('pointerup', e => {
+      if (drag && !moved) { const r = cv.getBoundingClientRect(), [la, lo] = LIB.map.fromScr(e.clientX - r.left, e.clientY - r.top); const hit = libFiltered().find(i => i.geometry && i.geometry.type === 'Polygon' && pointInPoly(la, lo, i.geometry.coordinates[0].map(c => [c[1], c[0]]))) || libFiltered().find(i => i.bbox && lo >= i.bbox[0] && lo <= i.bbox[2] && la >= i.bbox[1] && la <= i.bbox[3]); if (hit) { LIB.sel = hit.id; renderLib(); } }
+      drag = null;
+    });
+    cv.addEventListener('wheel', e => { e.preventDefault(); const r = cv.getBoundingClientRect(); LIB.map.zoomAt(-e.deltaY * (e.deltaMode ? 0.05 : 0.0025), e.clientX - r.left, e.clientY - r.top); if (LIB.F.inView) renderLib(); }, { passive: false });
+  }
+  renderLib();
+  setTimeout(libFitAll, 50);
+  if (!LIB.mode && LIB.saved) libStatus('Last library: “' + LIB.saved.name + '” — press Reconnect');
+}
+function libFitAll() { if (!LIB.map) return; const bb = [...LIB.items.values()].filter(i => i.bbox).map(i => i.bbox); if (bb.length) LIB.map.fit([Math.min(...bb.map(b => b[1])), Math.min(...bb.map(b => b[0])), Math.max(...bb.map(b => b[3])), Math.max(...bb.map(b => b[2]))], 50); }
+function closeLib() { $('#lib').classList.remove('on'); }
+function exportItemCollection() {
+  const fc = { type: 'FeatureCollection', 'miv:collection': collectionJSON(), features: [...LIB.items.values()] };
+  download((LIB.name || 'library') + '_stac_items.json', JSON.stringify(fc, null, 1), 'application/geo+json');
+}
+async function importItemCollection(file) {
+  try {
+    const j = JSON.parse(await file.text()); const feats = j.features || (j.type === 'Feature' ? [j] : []);
+    if (!LIB.mode) { LIB.mode = 'mem'; LIB.name = (j['miv:collection'] && j['miv:collection'].title) || file.name; }
+    feats.forEach(f => f && f.id && LIB.items.set(f.id, f)); renderLib(); libStatus(feats.length + ' item(s) imported — select the folder to open videos');
+  } catch (e) { libStatus('Import failed: ' + e.message); }
+}
+function buildLibUI() {
+  const canFS = !!window.showDirectoryPicker;
+  const F = LIB.F, inp = (k, type, ph, w) => h('input', { type, value: F[k], placeholder: ph || '', style: w ? 'width:' + w : '', oninput: e => { F[k] = type === 'checkbox' ? e.target.checked : e.target.value; renderLib(); }, onchange: e => { if (type === 'checkbox') { F[k] = e.target.checked; renderLib(); } } });
+  const pickDir = h('input', { type: 'file', webkitdirectory: true, multiple: true, hidden: true, onchange: e => { LIB.files.clear(); for (const f of e.target.files) LIB.files.set(f.webkitRelativePath.split('/').slice(1).join('/') || f.name, f); const keep = LIB.mode === 'mem' && LIB.items.size; LIB.name = (e.target.files[0] && e.target.files[0].webkitRelativePath.split('/')[0]) || 'folder'; if (keep) { LIB.mode = 'mem'; libScan(); } else libConnect(null, 'mem'); e.target.value = ''; } });
+  const pickCat = h('input', { type: 'file', accept: '.json,.geojson', hidden: true, onchange: e => { e.target.files[0] && importItemCollection(e.target.files[0]); e.target.value = ''; } });
+  const el = h('div', { id: 'lib' },
+    h('div', { id: 'libClass' }),
+    h('div', { class: 'libbar' },
+      h('span', { class: 'logo' }, 'LIBRARY'), h('span', { id: 'libName', class: 'muted' }),
+      canFS ? h('button', { onclick: async () => { try { const d = await showDirectoryPicker({ mode: 'readwrite', id: 'miviewer-lib' }); await idbSet('libDir', d); LIB.saved = d; await libConnect(d, 'fs'); } catch (e) { if (e.name !== 'AbortError') libStatus('Folder access failed: ' + e.message); } } }, 'Open library folder…') : null,
+      canFS ? h('button', { id: 'libRecon', onclick: async () => { if (!LIB.saved) return libStatus('No saved library'); try { if ((await LIB.saved.requestPermission({ mode: 'readwrite' })) === 'granted') await libConnect(LIB.saved, 'fs'); else libStatus('Permission not granted'); } catch (e) { libStatus('Reconnect failed: ' + e.message); } } }, 'Reconnect') : null,
+      h('button', { title: 'Read-only: index a folder in memory (works in any browser)', onclick: () => pickDir.click() }, canFS ? 'Index folder (read-only)…' : 'Select folder…'),
+      h('button', { onclick: () => libScan(), title: 'Re-index new or changed files' }, 'Rescan'),
+      h('button', { onclick: exportItemCollection, title: 'Download the catalogue as a STAC ItemCollection (GeoJSON)' }, 'Export STAC'),
+      h('button', { onclick: () => pickCat.click() }, 'Import STAC…'), pickDir, pickCat,
+      h('span', { id: 'libStat', class: 'muted', style: 'margin-left:auto' }), h('button', { onclick: closeLib }, 'Close ✕')),
+    h('div', { class: 'libbody' },
+      h('div', { class: 'libmap' }, h('canvas', { id: 'libMap' }), h('div', { id: 'libAttr', class: 'libattr' })),
+      h('div', { class: 'libside' },
+        h('div', { class: 'grid2' },
+          h('label', null, 'Search'), inp('q', 'text', 'name, platform, mission, bookmark'),
+          h('label', null, 'From / to (UTC date)'), h('div', { class: 'row' }, inp('from', 'date', '', '48%'), inp('to', 'date', '', '48%')),
+          h('label', null, 'Tier at least'), h('select', { onchange: e => { F.tier = e.target.value; renderLib(); } }, [['', 'any'], ['A', 'A — view geometry'], ['B', 'B — corners'], ['C', 'C — position']].map(([v, l]) => h('option', { value: v }, l))),
+          h('label', null, 'NIIRS ≥'), inp('minN', 'number', ''),
+          h('label', null, 'Only in map view'), h('input', { type: 'checkbox', onchange: e => { F.inView = e.target.checked; renderLib(); } })),
+        h('div', { class: 'row', style: 'margin:6px 0' }, h('span', { class: 'muted', id: 'libCount' }), h('span', { class: 'dim', style: 'margin-left:auto' }, 'click = locate · double-click = open')),
+        h('div', { id: 'libList' }))));
+  document.body.append(el);
+  idbGet('libDir').then(d => { if (d) { LIB.saved = d; } });
+}
 
 /* =====================================================================
    FILE PANE
@@ -2246,7 +3020,8 @@ function buildFilePane() {
   const tagsSeen = new Set(); S.klv.forEach(r => r.items.forEach(i => tagsSeen.add(i.tag)));
   const kv = rows => h('table', null, rows.map(([k, val]) => h('tr', null, h('td', { class: 'k' }, k), h('td', null, val))));
   p.append(h('h3', null, 'Source'), kv([
-    ['File', S.name || '–'], ['Size', S.size ? (S.size / 1048576).toFixed(2) + ' MB' : '–'],
+    ['File', S.name || '–'],
+    ...(S.libItemId ? [['Library item', S.libItemId + ' (bookmarks saved to catalogue)']] : []), ['Size', S.size ? (S.size / 1048576).toFixed(2) + ' MB' : '–'],
     ['Container', S.kind === 'ts' ? 'MPEG-2 TS (' + S.ts.det.ps + '-byte packets, ' + S.ts.pktCount.toLocaleString() + ' pkts)' : S.kind === 'mp4' ? 'ISO BMFF (MP4/MOV)' : 'sidecar only'],
     ['Duration', fmtT(S.dur)],
   ]));
@@ -2267,6 +3042,7 @@ function buildFilePane() {
   const dr = isDroneSource(), withPose = S.track ? S.track.recs.filter(r => hasPose(r.g)).length : 0;
   p.append(h('h3', null, 'Metadata'), kv([
     ['Source', S.metaSource || '–'],
+    ['Geometry tier', S.tier ? h('span', { class: S.tier.eff !== S.tier.base || S.tier.fovAssumed ? 'pa' : '' }, tierLabel(S.tier)) : '–'],
     ...(dr ? [['View geometry', withPose ? h('span', { class: 'okc' }, withPose + ' of ' + S.klv.length + ' records have camera attitude + FOV') : h('span', { class: 'badc' }, 'no camera attitude — track only')],
       ['Altitude', S.altInfo ? (CFG.droneAlt === 'abs' ? 'recorded absolute altitude' : 'relative height + take-off ground ' + fx(S.altInfo.base, 1) + ' m (' + S.altInfo.how + ')') : '–'],
       ['HFOV', (() => { const r = S.klv.find(x => isNum(x.f.hfov)); return r ? fx(r.f.hfov, 2) + '° from ' + r.f.hfovSrc : '–'; })()]] : []),
@@ -2331,10 +3107,13 @@ function buildSearchPane() {
   const p = $('#pSearch'); p.innerHTML = '';
   const num = (k, ph) => h('input', { type: 'number', value: SRCH[k], placeholder: ph || '', step: 'any', oninput: e => { SRCH[k] = e.target.value; } });
   const keys = [...DERIVED, ...(S.track ? [...S.track.keys].filter(k => k !== 'corners') : [])];
+  const gOK = geomOK();
+  if (S.tier && !gOK) p.append(h('div', { class: 'note pa' }, 'Tier ' + S.tier.eff + ': ' + TIER_TEXT[S.tier.eff] + '. Area, NIIRS, grazing and look-angle search need sensor geometry. Metadata rules (time, position, altitude…) still work. To estimate a view, enable "Assume sensor geometry" in Settings (results are flagged as assumed).'));
+  if (S.tier && S.tier.eff !== S.tier.base) p.append(h('div', { class: 'note pa' }, 'Geometry is ASSUMED for ' + S.tier.assumed + ' of ' + S.tier.n + ' records — treat search results as indicative only.'));
   p.append(
     h('h3', null, 'Observation area'),
     h('div', { class: 'btns' },
-      h('button', { onclick: () => startAOI(), class: S.drawing ? 'on' : '' }, S.drawing ? 'Drawing… (dbl-click / Enter)' : 'Draw AOI on map'),
+      h('button', { onclick: () => startAOI(), class: S.drawing ? 'on' : '', disabled: S.tier && !gOK }, S.drawing ? 'Drawing… (dbl-click / Enter)' : 'Draw AOI on map'),
       h('button', { onclick: () => aoiFromView() }, 'Use current footprint'),
       h('button', { onclick: () => aoiFromPick(), disabled: !S.pick }, 'Use pick point'),
       h('button', { onclick: clearAOI }, 'Clear')),
@@ -2463,11 +3242,16 @@ function buildExportPane() {
     h('h3', null, 'Clip range'),
     h('div', { class: 'row' }, h('span', { class: 'accc' }, fmtT(a) + ' → ' + fmtT(b)), h('span', { class: 'muted' }, '(' + (b - a).toFixed(2) + ' s' + (S.inT === null && S.outT === null ? ', whole file' : '') + ')')),
     h('div', { class: 'note' }, 'Set with In/Out (I / O keys), drag the timeline handles, or "Set clip" on a search result. Video cuts snap back to the preceding key frame so the clip decodes cleanly.'),
+    S.tier && (S.tier.eff !== S.tier.base || S.tier.fovAssumed) ? h('div', { class: 'note pa' }, 'Exports include ASSUMED geometry (' + tierLabel(S.tier) + '). Provenance is written to CSV/JSON/GeoJSON; converted KLV is marked MIVIEWER-CONVERTED-ASSUMED.') : null,
     h('h3', null, 'Motion imagery'),
     h('div', { class: 'btns' },
       B('MPEG-TS clip (.ts)', exportTS, S.kind !== 'ts' || !hasV, 'Packet-level cut — all PIDs incl. KLV preserved byte-exact (MISB ST 1402 transport)'),
       B(isDroneSource() ? 'MP4 + MISB KLV (converted)' : 'MP4 + KLV track (.mp4)', exportMP4, !canMP4, isDroneSource() ? 'Video copied bit-exact; drone telemetry converted to ST 0601 KLV (pose, FOV, frame centre and computed corners) in an ISO BMFF timed-metadata track' : 'Video copied bit-exact; KLV as ISO BMFF timed-metadata track (urim, UAS LS UL) referenced to video'),
       B('Burn-in WebM (real-time)', exportWebM, !S.playable, 'Records the clip with a metadata overlay — plays the clip in real time')),
+    h('h3', null, 'Edit lists'),
+    h('div', { class: 'btns' },
+      B('EDL (CMX3600)', exportEDL, !S.dur, 'Clip range, else search segments, else whole file; bookmarks as LOC markers'),
+      B('Clip list JSON', exportClipList, !S.dur)),
     h('h3', null, 'Metadata'),
     h('div', { class: 'btns' },
       B(isDroneSource() ? 'ST 0601 KLV (converted)' : 'Raw KLV (.klv)', exportKLV, !S.klv.length),
@@ -2536,18 +3320,19 @@ function exportCSVFrames() {
   if (!fr.length) for (let t = a; t <= b; t += 0.1) fr.push(t);
   const keys = ['sensLat', 'sensLon', 'sensAlt', 'platHdg', 'platPitch', 'platRoll', 'relAz', 'relEl', 'relRoll', 'hfov', 'vfov', 'slant', 'fcLat', 'fcLon', 'fcElev'];
   const fpCols = ['UL', 'UR', 'LR', 'LL'].flatMap(c => [c + '_lat', c + '_lon', c + '_h']);
-  const lines = [['frame', 't', 'utc', ...keys, 'fp_model', ...fpCols, 'ctr_lat', 'ctr_lon', 'ctr_h', 'graz', 'look_from', 'gsd', 'niirs_est'].join(',')];
+  const lines = [['frame', 't', 'utc', ...keys, 'fp_model', ...fpCols, 'ctr_lat', 'ctr_lon', 'ctr_h', 'graz', 'look_from', 'gsd', 'niirs_est', 'geom_provenance', 'provenance_notes', 'pose_prov', 'hfov_prov', 'alt_prov'].join(',')];
   fr.forEach((t, i) => {
     const st = S.track.at(t), fp = footprint(st, 1), c = fp && fp.center, g = c && !c.horizon ? viewGeom(st, c.lat, c.lon, c.h) : null;
     lines.push([frameIndex(t) + 1, t.toFixed(4), csvCell(fmtUTC(st.ts)), ...keys.map(k => csvCell(st[k])), fp ? fp.kind : '',
     ...(fp ? fp.pts.flatMap(p => p.horizon ? ['', '', ''] : [p.lat.toFixed(7), p.lon.toFixed(7), fx(p.h, 1)]) : fpCols.map(() => '')),
     c && !c.horizon ? c.lat.toFixed(7) : '', c && !c.horizon ? c.lon.toFixed(7) : '', c && !c.horizon ? fx(c.h, 1) : '',
-    g ? fx(g.graz, 2) : '', g ? fx(g.lookFrom, 1) : '', g && isNum(g.gsd) ? g.gsd.toFixed(3) : '', g && isNum(g.niirs) ? g.niirs.toFixed(2) : ''].join(','));
+    g ? fx(g.graz, 2) : '', g ? fx(g.lookFrom, 1) : '', g && isNum(g.gsd) ? g.gsd.toFixed(3) : '', g && isNum(g.niirs) ? g.niirs.toFixed(2) : '',
+    ...(() => { const gp = fp ? geomProv(st, fp.kind) : null, pv = stateProv(st); return [gp ? PROV_LABEL[gp.level] : '', gp ? csvCell(gp.notes.join('; ')) : '', PROV_LABEL[pv.relEl || (isNum(st.relEl) ? 'm' : '')] || '', PROV_LABEL[pv.hfov || (isNum(st.hfov) ? 'm' : '')] || '', PROV_LABEL[pv.sensAlt || (isNum(st.sensAlt) ? 'm' : '')] || '']; })()].join(','));
   });
   download(baseName() + '_frames.csv', lines.join('\n'), 'text/csv');
 }
 function exportJSON() {
-  const out = { generator: 'MISB Viewer ' + BUILD.ver + ' build ' + BUILD.build, source: S.name, clip: clipRange(), settings: { interp: CFG.interp, footprint: CFG.footprint, klvOffset: CFG.klvOffset }, records: S.klv.filter(inClip).map(r => ({ t: +r.t.toFixed(6), utc: fmtUTC(r.f.ts), checksumOk: r.csOk, fields: r.f })) };
+  const out = { generator: 'MISB Viewer ' + BUILD.ver + ' build ' + BUILD.build, source: S.name, clip: clipRange(), settings: { interp: CFG.interp, footprint: CFG.footprint, klvOffset: CFG.klvOffset }, tier: S.tier, records: S.klv.filter(inClip).map(r => ({ t: +r.t.toFixed(6), utc: fmtUTC(r.f.ts), checksumOk: r.csOk, provenance: r.prov || null, assumed: r.assumedKeys || null, fields: r.f })) };
   download(baseName() + '.json', JSON.stringify(out, null, 1), 'application/json');
 }
 function geoFeatures() {
@@ -2560,7 +3345,8 @@ function geoFeatures() {
     if (hh.pts.some(p => p.horizon)) continue;
     const st = S.track.at(hh.t), c = footprint(st, 1).center, g = c && !c.horizon ? viewGeom(st, c.lat, c.lon, c.h) : null;
     const ring = hh.pts.map(p => [+p.lon.toFixed(7), +p.lat.toFixed(7)]); ring.push(ring[0]);
-    F.push({ type: 'Feature', properties: { kind: 'footprint', t: +hh.t.toFixed(3), utc: fmtUTC(st.ts), niirs_est: g && isNum(g.niirs) ? +g.niirs.toFixed(2) : null, gsd_m: g && isNum(g.gsd) ? +g.gsd.toFixed(3) : null, grazing_deg: g ? +g.graz.toFixed(2) : null }, geometry: { type: 'Polygon', coordinates: [ring] } });
+    const gp0 = geomProv(st, footprint(st, 1).kind);
+    F.push({ type: 'Feature', properties: { kind: 'footprint', provenance: gp0 ? PROV_LABEL[gp0.level] : null, provenance_notes: gp0 ? gp0.notes.join('; ') : null, t: +hh.t.toFixed(3), utc: fmtUTC(st.ts), niirs_est: g && isNum(g.niirs) ? +g.niirs.toFixed(2) : null, gsd_m: g && isNum(g.gsd) ? +g.gsd.toFixed(3) : null, grazing_deg: g ? +g.graz.toFixed(2) : null }, geometry: { type: 'Polygon', coordinates: [ring] } });
   }
   if (S.aoi.length && S.aoiDone) F.push(S.aoi.length === 1 ? { type: 'Feature', properties: { kind: 'aoi' }, geometry: { type: 'Point', coordinates: [S.aoi[0][1], S.aoi[0][0]] } } : { type: 'Feature', properties: { kind: 'aoi' }, geometry: { type: 'Polygon', coordinates: [[...S.aoi.map(p => [p[1], p[0]]), [S.aoi[0][1], S.aoi[0][0]]]] } });
   S.results.forEach((r, i) => { const tp2 = S.trackPts.filter(p => p[3] >= r.t0 && p[3] <= r.t1); if (tp2.length > 1) F.push({ type: 'Feature', properties: { kind: 'search_segment', id: i + 1, t0: r.t0, t1: r.t1, niirs_min: r.nMin, niirs_max: r.nMax, look_from: r.look }, geometry: { type: 'LineString', coordinates: tp2.map(p => [p[1], p[0], isNum(p[2]) ? +p[2].toFixed(1) : 0]) } }); });
@@ -2713,6 +3499,15 @@ function buildSetPane() {
       h('label', null, 'Gimbal yaw'), sel('gimbalYawMode', [['auto', 'Auto-detect'], ['abs', 'Absolute (true bearing)'], ['rel', 'Relative to airframe']], false, () => { rederiveDrone(); rebuildTrack(); }),
       ...(S.logSegments && S.logSegments.length > 1 ? [h('label', null, 'Flight-log video segment'), h('select', { onchange: e => { CFG.logSegment = +e.target.value; const fl = parseFlightLogCSV(S.logRows.rows, S.logRows.hdr); S.klv = S.sidecar = fl.recs; finishLoad(); } }, S.logSegments.map(sg => h('option', { value: sg.i, selected: sg.i === (S.logChosen ?? 0) }, '#' + (sg.i + 1) + ' · ' + sg.dur.toFixed(0) + ' s')))] : [])),
     h('div', { class: 'note' }, 'For DJI SRT, DJI djmd, Parrot and flight-log sources. DJI absolute altitude is often unreliable; relative height plus take-off ground is the default. Gimbal yaw auto-detect: a flight log whose gimbal yaw does not follow the drone heading is treated as relative to the airframe.'),
+    h('h3', null, 'Assumed sensor geometry'),
+    h('label', null, h('input', { type: 'checkbox', checked: CFG.assumeOn, onchange: e => { CFG.assumeOn = e.target.checked; rebuildTrack(); buildFilePane(); buildSearchPane(); buildExportPane(); apply(false); } }), ' assume camera geometry where the metadata lacks it'),
+    h('div', { class: 'grid2' },
+      h('label', null, 'Camera pitch °'), num('assumePitch', false, 1, () => { rebuildTrack(); }),
+      h('label', null, 'Camera yaw'), sel('assumeYaw', [['heading', 'Platform heading'], ['course', 'Course over ground'], ['fixed', 'Fixed bearing']], false, () => { rebuildTrack(); }),
+      h('label', null, 'Fixed bearing °T'), num('assumeYawVal', false, 1, () => { rebuildTrack(); }),
+      h('label', null, 'HFOV °'), num('assumeHfov', false, 0.5, () => { rebuildTrack(); }),
+      h('label', { title: 'Radius of the possible-coverage disc for platform-only files' }, 'Max look angle °'), num('maxLook', false, 1)),
+    h('div', { class: 'note' }, 'Lifts a platform-only file (tier C) to an assumed view box. Every assumed value is flagged: dotted/hatched on the map, ᵃ in the HUD, provenance columns in exports, and the converted KLV mission ID ends in -ASSUMED. Measured values are never overwritten.'),
     h('h3', null, 'Footprint & interpolation'),
     h('div', { class: 'grid2' },
       h('label', null, 'Footprint source'), sel('footprint', [['auto', 'Auto (pose → corners)'], ['computed', 'Sensor model only'], ['metadata', 'KLV corners only']], true),
@@ -2731,7 +3526,7 @@ function buildSetPane() {
       h('label', null, 'RER'), num('rer', true, 0.05), h('label', null, 'H (overshoot) [4]'), num('hgain', true, 0.05), h('label', null, 'G/SNR [4]'), num('gsnr', true, 0.01), h('label', null, 'SNR [5]'), num('snr', true, 1)),
     h('div', { class: 'note' }, 'Geometric estimate only: GSD from slant range, IFOV (FOV / pixels) and grazing angle at the frame centre or AOI. Optics, motion blur and compression are folded into RER/H/SNR defaults; this is a still-image GIQE figure, not a V-NIIRS (MISB ST 0901) rating.'),
     h('h3', null, 'Keyboard'),
-    h('div', { class: 'note', html: '<kbd>Space</kbd> play · <kbd>←</kbd>/<kbd>→</kbd> frame · <kbd>Shift</kbd>+arrows 1 s · <kbd>I</kbd>/<kbd>O</kbd> clip in/out · <kbd>[</kbd>/<kbd>]</kbd> go to in/out · <kbd>Home</kbd>/<kbd>End</kbd> · <kbd>F</kbd> fit map · <kbd>Esc</kbd> cancel AOI' }),
+    h('div', { class: 'note', html: '<kbd>J</kbd>/<kbd>K</kbd>/<kbd>L</kbd> shuttle (repeat for 2×/4×/8×, J = reverse) · <kbd>K</kbd>+<kbd>J</kbd>/<kbd>L</kbd> frame step · <kbd>Space</kbd> play · <kbd>←</kbd>/<kbd>→</kbd> frame · <kbd>Shift</kbd>+arrows 1 s · <kbd>I</kbd>/<kbd>O</kbd> in/out · <kbd>[</kbd>/<kbd>]</kbd> go to in/out · <kbd>M</kbd> bookmark · <kbd>,</kbd>/<kbd>.</kbd> prev/next bookmark · <kbd>=</kbd>/<kbd>-</kbd> zoom timeline · <kbd>\\</kbd> fit timeline · wheel on timeline zooms, Shift+wheel pans, drag the top bar to pan · <kbd>F</kbd> fit map · <kbd>Esc</kbd> cancel AOI' }),
     h('div', { class: 'note dim' }, 'MISB Viewer ' + BUILD.ver + ' build ' + BUILD.build + ' — single file, no external libraries, no embedded binary.'),
   );
   updateDemStatus();
@@ -2751,6 +3546,7 @@ function init() {
   };
   // file open / drop
   $('#btnOpen').onclick = () => $('#fileIn').click();
+  buildLibUI(); $('#btnLib').onclick = openLib;
   $('#fileIn').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
   addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('dragover'); });
   addEventListener('dragleave', e => { if (e.target === document.documentElement || !e.relatedTarget) document.body.classList.remove('dragover'); });
@@ -2760,13 +3556,13 @@ function init() {
   $('#bPrev').onclick = () => stepFrame(-1); $('#bNext').onclick = () => stepFrame(1);
   $('#bBack').onclick = () => seek(P.time() - 1); $('#bFwd').onclick = () => seek(P.time() + 1);
   $('#bStart').onclick = () => seek(S.inT ?? 0); $('#bEnd').onclick = () => seek(S.outT ?? S.dur);
-  $('#rate').onchange = e => { vid.playbackRate = +e.target.value; };
+  $('#rate').onchange = e => { vid.playbackRate = +e.target.value; if (P.playing && !P.rev) { P.shuttle = +e.target.value; $('#shut').textContent = +e.target.value !== 1 ? '▶ ' + e.target.value + '×' : ''; } };
   $('#bIn').onclick = () => { S.inT = P.time(); if (S.outT !== null && S.outT < S.inT) S.outT = null; buildExportPane(); dirty(); };
   $('#bOut').onclick = () => { S.outT = P.time(); if (S.inT !== null && S.inT > S.outT) S.inT = null; buildExportPane(); dirty(); };
   $('#bClr').onclick = () => { S.inT = S.outT = null; buildExportPane(); dirty(); };
   // chart picker
   const cs = h('select', { title: 'Timeline chart', onchange: e => { S.chartKey = e.target.value; dirty(); } }, Object.entries(CHARTS).map(([k, [l]]) => h('option', { value: k }, l)));
-  $('#ctrl .row:nth-child(3)').append(h('span', { class: 'muted', style: 'margin-left:auto' }, 'chart'), cs);
+  $('#clipRow').append(h('span', { class: 'muted', style: 'margin-left:auto' }, 'chart'), cs);
   // map tools
   $('#bFit').onclick = () => S.bbox && MapV.fit(S.bbox);
   $('#bFollow').onclick = e => { S.follow = !S.follow; e.target.classList.toggle('on', S.follow); dirty(); };
@@ -2799,23 +3595,8 @@ function init() {
   sp.addEventListener('pointerdown', e => { sy = e.clientY; sh = $('#bottom').getBoundingClientRect().height; sp.setPointerCapture(e.pointerId); });
   sp.addEventListener('pointermove', e => { if (sy === null) return; document.documentElement.style.setProperty('--bottomH', clamp(sh - (e.clientY - sy), 120, innerHeight - 260) + 'px'); dirty(); });
   sp.addEventListener('pointerup', () => { sy = null; });
-  // keys
-  addEventListener('keydown', e => {
-    if (e.target.matches('input,select,textarea')) return;
-    const k = e.key;
-    if (k === ' ') { e.preventDefault(); P.toggle(); }
-    else if (k === 'ArrowLeft') { e.preventDefault(); e.shiftKey ? seek(P.time() - 1) : stepFrame(-1); }
-    else if (k === 'ArrowRight') { e.preventDefault(); e.shiftKey ? seek(P.time() + 1) : stepFrame(1); }
-    else if (k === 'i' || k === 'I') $('#bIn').click();
-    else if (k === 'o' || k === 'O') $('#bOut').click();
-    else if (k === '[') seek(S.inT ?? 0);
-    else if (k === ']') seek(S.outT ?? S.dur);
-    else if (k === 'Home') seek(0);
-    else if (k === 'End') seek(S.dur);
-    else if (k === 'f' || k === 'F') S.bbox && MapV.fit(S.bbox);
-    else if (k === 'Enter' && S.drawing) finishAOI();
-    else if (k === 'Escape' && S.drawing) { S.aoi = []; finishAOI(); }
-  });
+  installKeys();
+  $('#bMark').onclick = addMark;
   // follow camera
   const origDraw = MapV.draw.bind(MapV);
   MapV.draw = function () {
@@ -2825,7 +3606,7 @@ function init() {
     }
     origDraw();
   };
-  buildSetPane(); buildSearchPane(); buildExportPane();
+  buildSetPane(); buildSearchPane(); buildExportPane(); buildMarksPane();
   requestAnimationFrame(loop);
 }
 init();
