@@ -62,7 +62,7 @@ body.dragover #mapWrap{outline:2px dashed var(--acc);outline-offset:-6px}
 #tl{width:100%;height:150px;display:block;background:var(--p1);border-top:1px solid var(--line);cursor:pointer}
 aside{display:flex;flex-direction:column;border-left:1px solid var(--line);background:var(--p1);min-height:0}
 #tabs{display:flex;border-bottom:1px solid var(--line)}
-#tabs button{flex:1;border:0;border-radius:0;background:none;padding:7px 0;color:var(--mu);border-bottom:2px solid transparent}
+#tabs button{flex:1 1 auto;border:0;border-radius:0;background:none;padding:7px 3px;font-size:11px;letter-spacing:0;color:var(--mu);border-bottom:2px solid transparent}
 #tabs button.on{color:var(--acc);border-bottom-color:var(--acc)}
 .pane{display:none;overflow:auto;padding:10px;flex:1;min-height:0}
 .pane.on{display:block}
@@ -178,6 +178,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
     <button data-p="pFile" class="on">FILE</button>
     <button data-p="pMeta">META</button>
     <button data-p="pMarks">MARKS</button>
+    <button data-p="pObjects">OBJECTS</button>
     <button data-p="pSearch">SEARCH</button>
     <button data-p="pExport">EXPORT</button>
     <button data-p="pSet">SETTINGS</button>
@@ -185,6 +186,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
   <div class="pane on" id="pFile"><p class="muted">Open or drop a file to begin.</p></div>
   <div class="pane" id="pMeta"></div>
   <div class="pane" id="pMarks"></div>
+  <div class="pane" id="pObjects"></div>
   <div class="pane" id="pSearch"></div>
   <div class="pane" id="pExport"></div>
   <div class="pane" id="pSet"></div>
@@ -198,7 +200,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.3.1', build: 5 };
+const BUILD = { ver: 'R0.4.0', build: 6 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -1431,9 +1433,9 @@ const warn = m => { S.warnings.push(m); console.warn(m); };
 function resetState() {
   if (S.vidUrl) URL.revokeObjectURL(S.vidUrl);
   vid.removeAttribute('src'); vid.load();
-  Object.assign(S, { marks: [], selMark: null, libItemId: null, libMarks: null, metaSource: '', altInfo: null, logRows: null, logSegments: [], name: '', size: 0, kind: null, u8: null, ts: null, mp4: null, video: null, frames: [], fps: 0, minPts: 0, klv: [], track: null, dur: 0, playable: false, vidUrl: null, warnings: [], inT: null, outT: null, results: [], selRes: -1, hist: [], trackPts: [], fcPts: [], series: [], bbox: null, cur: null, pick: null, sec: null, pktIdx: -1 });
+  Object.assign(S, { marks: [], selMark: null, libItemId: null, libMarks: null, libObjects: null, metaSource: '', altInfo: null, logRows: null, logSegments: [], name: '', size: 0, kind: null, u8: null, ts: null, mp4: null, video: null, frames: [], fps: 0, minPts: 0, klv: [], track: null, dur: 0, playable: false, vidUrl: null, warnings: [], inT: null, outT: null, results: [], selRes: -1, hist: [], trackPts: [], fcPts: [], series: [], bbox: null, cur: null, pick: null, sec: null, pktIdx: -1 });
   P.vt = 0; P.playing = false;
-  if (typeof LIB !== 'undefined' && LIB.pending) { S.libItemId = LIB.pending.id; S.libMarks = LIB.pending.marks; LIB.pending = null; }
+  if (typeof LIB !== 'undefined' && LIB.pending) { S.libItemId = LIB.pending.id; S.libMarks = LIB.pending.marks; S.libObjects = LIB.pending.objects || null; LIB.pending = null; }
 }
 
 async function openFiles(files) {
@@ -1587,7 +1589,7 @@ function finishLoad() {
   DEM.reset(); preloadDEM();
   if (S.bbox) MapV.fit(S.bbox);
   buildFilePane(); buildMetaPane(); buildSearchPane(); buildExportPane();
-  TL.v0 = TL.v1 = 0; thumbsReset(); loadMarks(S.libMarks);
+  TL.v0 = TL.v1 = 0; thumbsReset(); loadMarks(S.libMarks); loadObjects();
   seek(S.frames.length ? S.frames[0] : 0);
   dirty();
 }
@@ -1766,6 +1768,7 @@ MapV.overlay = g => {
     g.beginPath(); g.moveTo(0, -10); g.lineTo(6, 7); g.lineTo(0, 3); g.lineTo(-6, 7); g.closePath(); g.fill(); g.stroke(); g.restore();
   }
   if (S.pick) { const [x, y] = MapV.toScr(S.pick.lat, S.pick.lon); g.strokeStyle = '#fff'; g.lineWidth = 2; g.beginPath(); g.arc(x, y, 6, 0, 7); g.stroke(); g.strokeStyle = COL.acc; g.lineWidth = 1; g.beginPath(); g.arc(x, y, 6, 0, 7); g.stroke(); }
+  if (typeof drawObjectsMap === 'function') { g.save(); drawObjectsMap(g); g.restore(); }
 };
 function updateLegend() {
   const L = [['Sensor track', COL.track], ['Frame centre track', COL.fc, 'dashed'], ['Current footprint', COL.acc], ['Footprint history', 'rgba(205,211,217,.5)'], ['AOI', COL.aoi]];
@@ -1826,6 +1829,7 @@ function drawVidOverlay() {
   const W = r.width, H = r.height, cur = S.cur;
   vg.strokeStyle = 'rgba(240,160,48,.7)'; vg.lineWidth = 1;
   vg.beginPath(); vg.moveTo(W / 2 - 12, H / 2); vg.lineTo(W / 2 - 4, H / 2); vg.moveTo(W / 2 + 4, H / 2); vg.lineTo(W / 2 + 12, H / 2); vg.moveTo(W / 2, H / 2 - 12); vg.lineTo(W / 2, H / 2 - 4); vg.moveTo(W / 2, H / 2 + 4); vg.lineTo(W / 2, H / 2 + 12); vg.stroke();
+  if (typeof drawObjectsVideo === 'function') { vg.save(); drawObjectsVideo(vg, W, H); vg.restore(); }
   if (!cur || !cur.proj) return;
   const toPx = uv => [(uv[0] + 1) / 2 * W, (uv[1] + 1) / 2 * H];
   if (S.aoi.length && S.aoiDone) {
@@ -1847,6 +1851,7 @@ function drawVidOverlay() {
   vg.fillText([fmtUTC(cur.st.ts), g && isNum(g.niirs) ? 'NIIRS≈' + g.niirs.toFixed(1) : '', g && isNum(g.gsd) ? 'GSD ' + g.gsd.toFixed(2) + ' m' : '', cur.aoi ? 'AOI ' + Math.round(cur.aoi.cov * 100) + '% in frame' : ''].filter(Boolean).join('   '), 6, H - 5);
 }
 vo.addEventListener('click', e => {
+  if (OBJ.drawing || performance.now() - (OBJ.lastTag || 0) < 400) return;
   const cur = S.cur; if (!cur || !cur.proj) return;
   const r = vo.getBoundingClientRect(), u = (e.clientX - r.left) / r.width * 2 - 1, v = (e.clientY - r.top) / r.height * 2 - 1;
   const g = cur.proj.toGround(u, v);
@@ -2243,7 +2248,7 @@ function klvForExport(r) { return (r.f.src || r.assumedKeys) ? encodeUAS(S.track
 const tl = $('#tl'), tg = tl.getContext('2d');
 const CHARTS = { niirs: ['NIIRS (est.)', 'niirs'], gsd: ['GSD m', 'gsd'], graz: ['Grazing °', 'graz'], slant: ['Slant range m', 'slantC'], alt: ['Altitude MSL m', 'alt'], hfov: ['HFOV °', 'hfov'], look: ['Look-from °T', 'look'] };
 const TL = { v0: 0, v1: 0, padL: 46, hover: undefined, thumbs: [], queue: [], asked: new Set(), busy: false, tv: null, tvSrc: null };
-const LANE = { ov: [2, 9], film: [12, 50], klv: [53, 61], marks: [63, 77], hits: [79, 85], chart: [89, 132], ruler: [134, 150] };
+const LANE = { ov: [2, 9], film: [12, 50], klv: [53, 61], marks: [63, 75], objs: [77, 85], hits: [87, 91], chart: [94, 132], ruler: [134, 150] };
 
 /* ---------- timecode ---------- */
 const p2 = n => String(n).padStart(2, '0');
@@ -2389,6 +2394,14 @@ function drawTimeline() {
     tg.fillStyle = sel ? '#fff' : COL.acc; tg.beginPath(); tg.moveTo(x, LANE.marks[0]); tg.lineTo(x + 5, LANE.marks[0] + 5); tg.lineTo(x, LANE.marks[0] + 10); tg.lineTo(x - 5, LANE.marks[0] + 5); tg.closePath(); tg.fill();
     tg.fillStyle = '#cdd3d9'; tg.fillText(m.label.slice(0, 18), x + 7, LANE.marks[0] + 9);
   }
+  // objects lane: one thin bar per object over its tracked span; analyst keyframes ticked
+  lbl('OBJ', LANE.objs[1]);
+  if (typeof OBJ !== 'undefined' && OBJ.list.length) {
+    const n = OBJ.list.length, hh = Math.max(1, Math.floor((LANE.objs[1] - LANE.objs[0]) / n));
+    OBJ.list.forEach((o, k) => { if (!o.samples.length) return; const y = LANE.objs[0] + k * hh, a = o.samples[0].t, b = o.samples[o.samples.length - 1].t; if (b < v0 || a > v1) return;
+      tg.fillStyle = o.color; tg.globalAlpha = o.id === OBJ.sel ? 1 : 0.6; tg.fillRect(tlX(Math.max(a, v0)), y, Math.max(2, tlX(Math.min(b, v1)) - tlX(Math.max(a, v0))), Math.max(1, hh - 1)); tg.globalAlpha = 1;
+      tg.fillStyle = '#fff'; for (const s2 of o.samples) if (s2.src === 'analyst' && inView(s2.t)) tg.fillRect(tlX(s2.t) - 0.5, y, 1.5, Math.max(1, hh - 1)); });
+  }
   // hits lane
   lbl('HITS', LANE.hits[1]);
   for (const [i, r] of S.results.entries()) { if (r.t1 < v0 || r.t0 > v1) continue; tg.fillStyle = i === S.selRes ? '#6cc3ff' : 'rgba(108,195,255,.55)'; const a = tlX(Math.max(r.t0, v0)), b = tlX(Math.min(r.t1, v1)); tg.fillRect(a, LANE.hits[0], Math.max(2, b - a), LANE.hits[1] - LANE.hits[0]); }
@@ -2440,6 +2453,7 @@ function showPreview(e) {
   tl.addEventListener('pointerdown', e => {
     const x = e.offsetX, y = e.offsetY;
     if (y <= LANE.ov[1] + 2) { drag = 'ov'; const span = TL.v1 - TL.v0; TL.v0 = clamp(((x - TL.padL) / (tl.clientWidth - TL.padL - 8)) * S.dur - span / 2, 0, S.dur - span); TL.v1 = TL.v0 + span; dirty(); }
+    else if (y >= LANE.objs[0] && y <= LANE.objs[1] && typeof OBJ !== 'undefined' && OBJ.list.length) { const hh = Math.max(1, Math.floor((LANE.objs[1] - LANE.objs[0]) / OBJ.list.length)), o = OBJ.list[Math.min(OBJ.list.length - 1, Math.floor((y - LANE.objs[0]) / hh))]; if (o) { OBJ.sel = o.id; buildObjPane(); seek(clamp(tlT(x), o.samples[0].t, o.samples.at(-1).t)); } }
     else if (y >= LANE.marks[0] && y <= LANE.marks[1]) { const m = S.marks.find(m => Math.abs(tlX(m.t) - x) < 7); if (m) { S.selMark = m.id; P.pause(); seek(m.t); buildMarksPane(); return; } drag = 'seek'; P.pause(); seek(tlT(x)); }
     else if (S.inT !== null && Math.abs(x - tlX(S.inT)) < 5) drag = 'in';
     else if (S.outT !== null && Math.abs(x - tlX(S.outT)) < 5) drag = 'out';
@@ -2492,6 +2506,10 @@ function installKeys() {
     else if (k === 'Home') seek(0);
     else if (k === 'End') seek(S.dur);
     else if (k === 'f' || k === 'F') S.bbox && MapV.fit(S.bbox);
+    else if (k === 'Enter' && OBJ.drawing) { const pts = OBJ.drawing; finishTag(pts); }
+    else if (k === 'Escape' && OBJ.drawing) cancelTag();
+    else if (k === 'Escape' && OBJ.job) OBJ.job.cancel = true;
+    else if ((k === 't' || k === 'T') && !OBJ.drawing) startTag();
     else if (k === 'Enter' && S.drawing) finishAOI();
     else if (k === 'Escape' && S.drawing) { S.aoi = []; finishAOI(); }
   });
@@ -2761,9 +2779,10 @@ function grabFrame(url, t) {
 }
 async function catalogItem(file, path, sidecars, prev) {
   const id = libId(path), now = new Date().toISOString();
-  const props = { title: file.name, created: prev ? prev.properties.created : now, updated: now, 'miv:path': path, 'miv:sidecars': sidecars.map(s => s._path || s.name), 'file:size': file.size, 'miv:file_mtime': file.lastModified, 'miv:bookmarks': prev ? prev.properties['miv:bookmarks'] || [] : [] };
+  const props = { title: file.name, created: prev ? prev.properties.created : now, updated: now, 'miv:path': path, 'miv:sidecars': sidecars.map(s => s._path || s.name), 'file:size': file.size, 'miv:file_mtime': file.lastModified, 'miv:bookmarks': prev ? prev.properties['miv:bookmarks'] || [] : [], 'miv:objects': prev ? prev.properties['miv:objects'] || [] : [] };
   const item = { type: 'Feature', stac_version: '1.0.0', stac_extensions: [], id, collection: 'miviewer-library', geometry: null, bbox: undefined, properties: props, links: [{ rel: 'root', href: '../catalog.json', type: 'application/json' }, { rel: 'parent', href: '../catalog.json', type: 'application/json' }, { rel: 'collection', href: '../catalog.json', type: 'application/json' }, { rel: 'self', href: './' + id + '.json', type: 'application/geo+json' }], assets: {} };
   item.assets.video = { href: '../../' + path.split('/').map(encodeURIComponent).join('/'), type: /\.(mp4|m4v|mov)$/i.test(path) ? 'video/mp4' : 'video/mp2t', roles: ['data'], title: file.name };
+  if (prev && prev.assets && prev.assets.objects) item.assets.objects = prev.assets.objects;
   sidecars.forEach((s, i) => { item.assets['sidecar' + (i || '')] = { href: '../../' + (s._path || s.name).split('/').map(encodeURIComponent).join('/'), roles: ['metadata'], title: s.name }; });
   let thumbBlob = null;
   try {
@@ -2874,10 +2893,11 @@ async function libScan() {
       if (!now) continue;
       const ob = old.properties['miv:bookmarks'] || [], nb = now.properties['miv:bookmarks'] || [];
       if (ob.length && !nb.length) now.properties['miv:bookmarks'] = ob;
+      if ((old.properties['miv:objects'] || []).length && !(now.properties['miv:objects'] || []).length && old.assets.objects && LIB.mode === 'fs') { try { const tx = await (await fsRead(LIB.dir, '.miviewer/objects/' + old.id + '.json')).text(); await fsWrite(LIB.dir, '.miviewer/objects/' + now.id + '.json', tx); now.properties['miv:objects'] = old.properties['miv:objects']; now.assets.objects = { ...old.assets.objects, href: '../objects/' + now.id + '.json' }; } catch (e) { } }
       now.properties.created = old.properties.created || now.properties.created;
       now.properties['miv:previous_paths'] = [...(old.properties['miv:previous_paths'] || []), old.properties['miv:path']];
       await libSaveItem(now, true);
-      if (LIB.mode === 'fs') { await fsRemove(LIB.dir, '.miviewer/items/' + old.id + '.json'); await fsRemove(LIB.dir, '.miviewer/thumbs/' + old.id + '.jpg'); }
+      if (LIB.mode === 'fs') { await fsRemove(LIB.dir, '.miviewer/items/' + old.id + '.json'); await fsRemove(LIB.dir, '.miviewer/thumbs/' + old.id + '.jpg'); await fsRemove(LIB.dir, '.miviewer/objects/' + old.id + '.json'); }
       LIB.items.delete(old.id); moved++;
     }
     if (LIB.mode === 'fs') await fsWrite(LIB.dir, '.miviewer/catalog.json', JSON.stringify(collectionJSON(), null, 1));
@@ -2901,7 +2921,7 @@ async function libRemove(ids) {
   for (const id of ids) {
     const it = LIB.items.get(id); if (!it || !it.properties['miv:missing']) continue;
     try {
-      if (LIB.mode === 'fs') { await fsRemove(LIB.dir, '.miviewer/items/' + id + '.json'); await fsRemove(LIB.dir, '.miviewer/thumbs/' + id + '.jpg'); }
+      if (LIB.mode === 'fs') { await fsRemove(LIB.dir, '.miviewer/items/' + id + '.json'); await fsRemove(LIB.dir, '.miviewer/thumbs/' + id + '.jpg'); await fsRemove(LIB.dir, '.miviewer/objects/' + id + '.json'); }
       LIB.items.delete(id); if (LIB.thumbs.has(id)) { URL.revokeObjectURL(LIB.thumbs.get(id)); LIB.thumbs.delete(id); }
       if (LIB.sel === id) LIB.sel = null; done.push(id);
     } catch (e) { libStatus('Could not remove ' + id + ': ' + e.message); }
@@ -2912,10 +2932,10 @@ async function libRemove(ids) {
   renderLib();
 }
 function removeWarning(items) {
-  const marks = items.reduce((n, i) => n + (i.properties['miv:bookmarks'] || []).length, 0);
+  const marks = items.reduce((n, i) => n + (i.properties['miv:bookmarks'] || []).length, 0), objs = items.reduce((n, i) => n + (i.properties['miv:objects'] || []).length, 0);
   return h('div', { class: 'note badc', style: 'border:1px solid var(--bad);padding:6px;margin-top:4px' },
     'Remove ' + (items.length === 1 ? 'the catalogue record for “' + items[0].properties.title + '”' : items.length + ' catalogue records') + '? ',
-    'This deletes the record' + (LIB.mode === 'fs' ? ', its thumbnail in .miviewer/' : '') + (marks ? ' and ' + marks + ' bookmark(s) with their notes' : '') + '. ',
+    'This deletes the record' + (LIB.mode === 'fs' ? ', its thumbnail in .miviewer/' : '') + (marks ? ', ' + marks + ' bookmark(s) with their notes' : '') + (objs ? ', ' + objs + ' tagged object(s) with their tracks' : '') + '. ',
     'The video file' + (items.length > 1 ? 's are' : ' is') + ' no longer in the library folder; this cannot be undone. If a file was only moved or renamed within the folder, press Rescan first — it is matched by content and keeps its bookmarks.',
     h('div', { class: 'btns' },
       h('button', { style: 'border-color:var(--bad);color:var(--bad)', onclick: e => { e.stopPropagation(); libRemove(items.map(i => i.id)); } }, 'Remove permanently'),
@@ -2926,6 +2946,23 @@ function libMarksChanged() {
   if (!S.libItemId || !LIB.items.has(S.libItemId)) return;
   const it = LIB.items.get(S.libItemId); it.properties['miv:bookmarks'] = S.marks.map(m => ({ ...m })); it.properties.updated = new Date().toISOString();
   clearTimeout(libSaveTimer); libSaveTimer = setTimeout(() => libSaveItem(it).catch(e => console.warn(e)), 600);
+}
+/* objects: full tracks in .miviewer/objects/<id>.json (STAC asset 'objects'); summary on the item */
+function libObjectsChanged() {
+  if (!S.libItemId || !LIB.items.has(S.libItemId)) return;
+  const it = LIB.items.get(S.libItemId), id = it.id;
+  it.properties['miv:objects'] = OBJ.list.map(o => ({ id: o.id, code: o.code, label: o.label, class: o.cls, samples: o.samples.length }));
+  it.properties.updated = new Date().toISOString();
+  if (OBJ.list.length) it.assets.objects = { href: '../objects/' + id + '.json', type: 'application/json', roles: ['metadata', 'annotation'], title: 'Analyst-tagged objects and tracks' };
+  else delete it.assets.objects;
+  LIB.objCache = LIB.objCache || new Map(); LIB.objCache.set(id, JSON.parse(JSON.stringify(OBJ.list)));
+  if (LIB.mode !== 'fs') return;
+  (OBJ.list.length ? fsWrite(LIB.dir, '.miviewer/objects/' + id + '.json', JSON.stringify({ item: id, source: it.properties['miv:path'], objects: OBJ.list })) : fsRemove(LIB.dir, '.miviewer/objects/' + id + '.json')).then(() => libSaveItem(it)).catch(e => console.warn(e));
+}
+async function libLoadObjects(id) {
+  if (LIB.objCache && LIB.objCache.has(id)) return JSON.parse(JSON.stringify(LIB.objCache.get(id)));
+  const it = LIB.items.get(id); if (!it || !it.assets.objects || LIB.mode !== 'fs') return null;
+  try { const j = JSON.parse(await (await fsRead(LIB.dir, '.miviewer/objects/' + id + '.json')).text()); return j.objects || null; } catch (e) { return null; }
 }
 async function libOpenItem(id) {
   const it = LIB.items.get(id); if (!it) return;
@@ -2946,7 +2983,7 @@ function libStatus(m) { const e = $('#libStat'); if (e) e.textContent = m; }
 function libFiltered() {
   const F = LIB.F, q = F.q.toLowerCase();
   let list = [...LIB.items.values()];
-  if (q) list = list.filter(i => [i.properties.title, i.properties.platform, i.properties['miv:mission'], i.properties['miv:path'], ...(i.properties['miv:bookmarks'] || []).map(b => b.label + ' ' + b.note)].join(' ').toLowerCase().includes(q));
+  if (q) list = list.filter(i => [i.properties.title, i.properties.platform, i.properties['miv:mission'], i.properties['miv:path'], ...(i.properties['miv:bookmarks'] || []).map(b => b.label + ' ' + b.note), ...(i.properties['miv:objects'] || []).map(o => o.code + ' ' + o.label + ' ' + o.class)].join(' ').toLowerCase().includes(q));
   if (F.tier) list = list.filter(i => (i.properties['miv:tier'] || 'D') <= F.tier);
   if (F.minN !== '') list = list.filter(i => isNum(i.properties['miv:niirs_max']) && i.properties['miv:niirs_max'] >= +F.minN);
   const t = i => i.properties.start_datetime || i.properties.datetime || '';
@@ -2975,7 +3012,7 @@ function renderLib() {
         h('div', null,
           h('div', { class: 'h' }, h('span', null, P2.title), h('span', { class: 'tier ' + (P2['miv:tier'] || 'D') }, P2['miv:tier'] || 'D')),
           h('div', { class: 'muted' }, (P2.start_datetime ? P2.start_datetime.replace('T', ' ').slice(0, 19) + 'Z' : (P2.datetime || '').slice(0, 10) + ' (file)') + ' · ' + fmtT(P2['miv:duration_s'] || 0) + (P2.platform ? ' · ' + P2.platform : '')),
-          h('div', { class: 'dim' }, [isNum(P2['miv:niirs_max']) ? 'NIIRS ' + P2['miv:niirs_min'] + '–' + P2['miv:niirs_max'] : null, P2['miv:geometry_provenance'] ? 'geometry ' + P2['miv:geometry_provenance'] : null, (P2['miv:bookmarks'] || []).length ? (P2['miv:bookmarks'].length + ' bookmark(s)') : null, P2['miv:classification'] || null].filter(Boolean).join(' · ')),
+          h('div', { class: 'dim' }, [isNum(P2['miv:niirs_max']) ? 'NIIRS ' + P2['miv:niirs_min'] + '–' + P2['miv:niirs_max'] : null, P2['miv:geometry_provenance'] ? 'geometry ' + P2['miv:geometry_provenance'] : null, (P2['miv:bookmarks'] || []).length ? (P2['miv:bookmarks'].length + ' bookmark(s)') : null, (P2['miv:objects'] || []).length ? (P2['miv:objects'].length + ' object(s)') : null, P2['miv:classification'] || null].filter(Boolean).join(' · ')),
           P2['miv:missing'] ? h('div', { class: 'badc' }, 'file missing from folder') : P2['miv:error'] ? h('div', { class: 'badc' }, P2['miv:error']) : null,
           h('div', { class: 'btns' }, h('button', { onclick: e => { e.stopPropagation(); libOpenItem(it.id); }, disabled: !!P2['miv:missing'] }, 'Open'),
             P2['miv:missing'] ? h('button', { style: 'border-color:var(--bad)', onclick: e => { e.stopPropagation(); LIB.confirm = it.id; renderLib(); } }, 'Remove from catalogue…') : null,
@@ -3056,6 +3093,414 @@ function buildLibUI() {
         h('div', { id: 'libList' }))));
   document.body.append(el);
   idbGet('libDir').then(d => { if (d) { LIB.saved = d; } });
+}
+
+/* =====================================================================
+   OBJECTS — analyst tagging, sensor-model-aided tracking, movement patterns
+   Object: { id (UUID), code (OBJ-XXXX), label, cls, desc, color, created,
+             samples:[{ t, poly:[[u,v]…] (normalised image coords -1..1),
+                        c:[u,v], g:{lat,lon,h}|null, conf, src:'analyst'|'tracker' }] }
+   Tracking: the camera model predicts where the object's ground footprint
+   re-projects in the next frame (absorbs slew/zoom/platform motion), plus the
+   object's own ground velocity; normalised cross-correlation over a small
+   window and three scales then finds the residual. Analyst keyframes bound
+   tracker runs; redrawing at any frame corrects drift.
+   ===================================================================== */
+Object.assign(CFG, { trackGate: 5, trackStep: 2, trackMinScore: 0.55, stopSpeed: 1.0, stopMin: 3, nearDist: 50 });
+const OBJ = { list: [], drawing: null, redraw: null, sel: null, job: null, confirmDel: null, palette: ['#6cc3ff', '#7fd18b', '#e37ad6', '#f2d45c', '#ff8a65', '#9fa8ff', '#4dd0c8', '#c5e17a'] };
+const CLASSES = ['vehicle', 'person', 'vessel', 'aircraft', 'structure', 'equipment', 'animal', 'other'];
+const uuid = () => (crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); });
+const polyC = P => { let a = 0, x = 0, y = 0; for (let i = 0; i < P.length; i++) { const [x0, y0] = P[i], [x1, y1] = P[(i + 1) % P.length], k = x0 * y1 - x1 * y0; a += k; x += (x0 + x1) * k; y += (y0 + y1) * k; } return Math.abs(a) < 1e-12 ? [P.reduce((s, p) => s + p[0], 0) / P.length, P.reduce((s, p) => s + p[1], 0) / P.length] : [x / (3 * a), y / (3 * a)]; };
+const frameDt = () => 1 / (S.fps || 30);
+
+/* ---------- sample lookup / interpolation ---------- */
+function objAt(o, t) {
+  const S0 = o.samples; if (!S0.length) return null;
+  const i = bsearchLE(S0, t + 1e-6, s => s.t), half = frameDt() * 0.6, gapMax = frameDt() * (CFG.trackStep * 3 + 1);
+  const a = S0[i], b = S0[i + 1];
+  if (a && Math.abs(t - a.t) <= half) return a;
+  if (b && Math.abs(b.t - t) <= half) return b;
+  if (a && b && b.t - a.t <= gapMax && a.poly.length === b.poly.length) {
+    const f = (t - a.t) / (b.t - a.t);
+    return { t, poly: a.poly.map((p, k) => [lerp(p[0], b.poly[k][0], f), lerp(p[1], b.poly[k][1], f)]), c: [lerp(a.c[0], b.c[0], f), lerp(a.c[1], b.c[1], f)], g: a.g && b.g ? { lat: lerp(a.g.lat, b.g.lat, f), lon: lerp(a.g.lon, b.g.lon, f), h: lerp(a.g.h, b.g.h, f) } : null, conf: Math.min(a.conf, b.conf), src: 'interp' };
+  }
+  return null;
+}
+function groundOf(t, uv) {
+  if (!S.track) return null;
+  const st = S.track.at(t), P = makeProjector(st); if (!P) return null;
+  const g = P.toGround(uv[0], uv[1]); return g && !g.horizon ? { lat: g.lat, lon: g.lon, h: g.h } : null;
+}
+function addSample(o, s) {
+  const i = o.samples.findIndex(x => Math.abs(x.t - s.t) < frameDt() * 0.5);
+  if (i >= 0) o.samples[i] = s; else { o.samples.push(s); o.samples.sort((a, b) => a.t - b.t); }
+}
+
+/* ---------- tagging on the video ---------- */
+function startTag(redrawId) {
+  if (!S.dur) return;
+  P.pause(); OBJ.drawing = []; OBJ.redraw = redrawId || null;
+  $('#vidOv').style.cursor = 'crosshair';
+  status((redrawId ? 'Redraw ' + (OBJ.list.find(o => o.id === redrawId) || {}).code : 'Tag object') + ': click polygon vertices on the video, double-click or Enter to close · drag for a box · Esc cancels');
+  buildObjPane(); dirty();
+}
+function cancelTag() { OBJ.drawing = null; OBJ.redraw = null; status('Tagging cancelled'); buildObjPane(); dirty(); }
+function finishTag(poly) {
+  if (!poly || poly.length < 3) { cancelTag(); return; }
+  const t = P.time(), c = polyC(poly), s = { t: S.frames.length ? S.frames[frameIndex(t)] : t, poly, c, g: groundOf(t, c), conf: 1, src: 'analyst' };
+  let o;
+  if (OBJ.redraw) { o = OBJ.list.find(x => x.id === OBJ.redraw); if (o) addSample(o, s); }
+  else {
+    const id = uuid();
+    o = { id, code: 'OBJ-' + id.replace(/-/g, '').slice(0, 4).toUpperCase(), label: '', cls: '', desc: '', color: OBJ.palette[OBJ.list.length % OBJ.palette.length], created: new Date().toISOString(), samples: [s], status: 'tagged' };
+    OBJ.list.push(o);
+  }
+  OBJ.drawing = null; OBJ.redraw = null; OBJ.sel = o.id; OBJ.lastTag = performance.now();
+  objectsChanged(); buildObjPane(true);
+  status(o.code + ' tagged at ' + tcAt(t) + ' — name it in OBJECTS, then Track ▶ / ◀ Track');
+  document.querySelector('[data-p=pObjects]').click();
+  setTimeout(() => { const i = document.querySelector('#pObjects .mark.sel input[type=text]'); if (i) i.focus(); }, 50);
+  dirty();
+}
+(() => {
+  const vo = $('#vidOv'); let down = null;
+  const uvOf = e => { const r = vo.getBoundingClientRect(); return [(e.clientX - r.left) / r.width * 2 - 1, (e.clientY - r.top) / r.height * 2 - 1]; };
+  vo.addEventListener('pointerdown', e => { if (!OBJ.drawing) return; down = uvOf(e); OBJ.dragBox = null; vo.setPointerCapture(e.pointerId); });
+  vo.addEventListener('pointermove', e => { if (!OBJ.drawing) return; OBJ.hover = uvOf(e); if (down) { const p = OBJ.hover; if (Math.abs(p[0] - down[0]) + Math.abs(p[1] - down[1]) > 0.02) OBJ.dragBox = [down, p]; } dirty(); });
+  vo.addEventListener('pointerup', e => {
+    if (!OBJ.drawing) return;
+    const p = uvOf(e);
+    if (OBJ.dragBox && !OBJ.drawing.length) { const [a, b] = OBJ.dragBox; down = null; OBJ.dragBox = null; finishTag([[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]]); return; }
+    down = null; OBJ.dragBox = null; OBJ.drawing.push(p); dirty();
+  });
+  vo.addEventListener('dblclick', e => { if (!OBJ.drawing) return; e.preventDefault(); const pts = OBJ.drawing; while (pts.length > 1 && Math.hypot(pts[pts.length - 1][0] - pts[pts.length - 2][0], pts[pts.length - 1][1] - pts[pts.length - 2][1]) < 0.01) pts.pop(); finishTag(pts); });
+})();
+
+/* ---------- drawing ---------- */
+function drawObjectsVideo(g, W, H) {
+  const toPx = uv => [(uv[0] + 1) / 2 * W, (uv[1] + 1) / 2 * H], t = P.time();
+  for (const o of OBJ.list) {
+    const s = objAt(o, t); if (!s) continue;
+    const sel = o.id === OBJ.sel;
+    g.strokeStyle = o.color; g.lineWidth = sel ? 2.5 : 1.5; g.setLineDash(s.src === 'analyst' ? [] : s.conf < 0.7 ? [3, 3] : []);
+    g.beginPath(); s.poly.forEach((p, i) => { const [x, y] = toPx(p); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.closePath(); g.stroke(); g.setLineDash([]);
+    const [cx, cy] = toPx(s.c), ys = Math.min(...s.poly.map(p => toPx(p)[1]));
+    g.font = '11px ' + getComputedStyle(document.body).fontFamily; const txt = o.code + (o.label ? ' ' + o.label : '');
+    g.fillStyle = 'rgba(0,0,0,.6)'; g.fillRect(cx - 2, ys - 15, g.measureText(txt).width + 6, 13); g.fillStyle = o.color; g.fillText(txt, cx + 1, ys - 5);
+  }
+  if (OBJ.drawing) {
+    g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.setLineDash([4, 3]);
+    if (OBJ.dragBox) { const [a, b] = OBJ.dragBox.map(toPx); g.strokeRect(a[0], a[1], b[0] - a[0], b[1] - a[1]); }
+    else if (OBJ.drawing.length) { g.beginPath(); OBJ.drawing.forEach((p, i) => { const [x, y] = toPx(p); i ? g.lineTo(x, y) : g.moveTo(x, y); }); if (OBJ.hover) { const [x, y] = toPx(OBJ.hover); g.lineTo(x, y); } g.stroke(); OBJ.drawing.forEach(p => { const [x, y] = toPx(p); g.fillStyle = '#fff'; g.fillRect(x - 2, y - 2, 4, 4); }); }
+    g.setLineDash([]); g.fillStyle = 'rgba(0,0,0,.6)'; g.fillRect(4, 4, 330, 16); g.fillStyle = '#fff'; g.fillText('TAG: click vertices · double-click/Enter closes · drag = box · Esc', 8, 15);
+  }
+}
+let _objPolyCache = new Map();
+function drawObjectsMap(g) {
+  const t = P.time();
+  for (const o of OBJ.list) {
+    const pts = o.samples.filter(s => s.g); if (!pts.length) continue;
+    const sel = o.id === OBJ.sel;
+    const line = (arr, w, a) => { if (arr.length < 2) return; g.beginPath(); arr.forEach((s, i) => { const [x, y] = MapV.toScr(s.g.lat, s.g.lon); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.lineWidth = w; g.globalAlpha = a; g.strokeStyle = o.color; g.stroke(); g.globalAlpha = 1; };
+    line(pts, 1, 0.35); line(pts.filter(s => s.t <= t + 1e-6), sel ? 3 : 2, 0.95);
+    const cur = objAt(o, t);
+    if (cur && cur.g) {
+      const key = o.id + ':' + cur.t.toFixed(3);
+      let gp = _objPolyCache.get(key);
+      if (!gp) { gp = cur.poly.map(p => groundOf(t, p)); if (_objPolyCache.size > 200) _objPolyCache.clear(); _objPolyCache.set(key, gp); }
+      if (gp.every(Boolean)) { g.beginPath(); gp.forEach((p, i) => { const [x, y] = MapV.toScr(p.lat, p.lon); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.closePath(); g.globalAlpha = 0.25; g.fillStyle = o.color; g.fill(); g.globalAlpha = 1; g.strokeStyle = o.color; g.lineWidth = 1.5; g.stroke(); }
+      const [x, y] = MapV.toScr(cur.g.lat, cur.g.lon);
+      g.fillStyle = o.color; g.strokeStyle = '#000'; g.beginPath(); g.arc(x, y, sel ? 6 : 4.5, 0, 7); g.fill(); g.stroke();
+      g.font = '11px ' + getComputedStyle(document.body).fontFamily; g.fillStyle = 'rgba(0,0,0,.6)'; const txt = o.code + (o.label ? ' ' + o.label : ''); g.fillRect(x + 7, y - 9, g.measureText(txt).width + 6, 13); g.fillStyle = o.color; g.fillText(txt, x + 10, y + 1);
+    }
+  }
+}
+
+/* ---------- image helpers for the tracker ---------- */
+const TRK = { v: null, cv: null, W: 0, H: 0 };
+function trkVideo() {
+  return new Promise(res => {
+    if (TRK.v && TRK.src === S.vidUrl && TRK.v.readyState >= 2) return res(TRK.v);
+    TRK.v = document.createElement('video'); TRK.v.muted = true; TRK.v.preload = 'auto'; TRK.src = S.vidUrl;
+    TRK.v.addEventListener('loadeddata', () => res(TRK.v), { once: true }); TRK.v.addEventListener('error', () => res(null), { once: true });
+    TRK.v.src = S.vidUrl;
+  });
+}
+function grabRGB(t) {
+  return new Promise(res => {
+    const v = TRK.v; const done = () => {
+      const W = TRK.W = Math.min(960, v.videoWidth || 960), H = TRK.H = Math.round(W * (v.videoHeight || 540) / (v.videoWidth || 960));
+      if (!TRK.cv) TRK.cv = document.createElement('canvas'); TRK.cv.width = W; TRK.cv.height = H;
+      const c = TRK.cv.getContext('2d', { willReadFrequently: true }); c.drawImage(v, 0, 0, W, H);
+      const d = c.getImageData(0, 0, W, H).data, N = W * H, G = [new Float32Array(N), new Float32Array(N), new Float32Array(N)];
+      for (let i = 0, j = 0; i < N; i++, j += 4) { G[0][i] = d[j]; G[1][i] = d[j + 1]; G[2][i] = d[j + 2]; }
+      res(G);
+    };
+    if (Math.abs(v.currentTime - t) < 1e-4 && !v.seeking) return done();
+    v.addEventListener('seeked', done, { once: true }); v.currentTime = t;
+  });
+}
+function samplePlane(G, W, H, x0, y0, w, h, ow, oh, out, off) { // bilinear resample rect -> ow x oh
+  const sx = w / ow, sy = h / oh;
+  for (let j = 0; j < oh; j++) {
+    const y = clamp(y0 + (j + 0.5) * sy - 0.5, 0, H - 1.001), yi = y | 0, fy = y - yi;
+    for (let i = 0; i < ow; i++) {
+      const x = clamp(x0 + (i + 0.5) * sx - 0.5, 0, W - 1.001), xi = x | 0, fx = x - xi, k = yi * W + xi;
+      out[off + j * ow + i] = (G[k] * (1 - fx) + G[k + 1] * fx) * (1 - fy) + (G[k + W] * (1 - fx) + G[k + W + 1] * fx) * fy;
+    }
+  }
+}
+function sampleRect(G, W, H, x0, y0, w, h, ow, oh) { // 3 colour planes, channel-major
+  const out = new Float32Array(3 * ow * oh);
+  for (let c = 0; c < 3; c++) samplePlane(G[c], W, H, x0, y0, w, h, ow, oh, out, c * ow * oh);
+  return out;
+}
+function nccAt(A, aw, ah, T, tw, th, ox, oy, tm, tsd, M) { // NCC over the joint RGB vector, masked to the analyst outline
+  let s = 0, s2 = 0, sp = 0; const pa = aw * ah, pt = tw * th, n = 3 * M.length;
+  for (let c = 0; c < 3; c++) { const ca = c * pa + oy * aw + ox, ct = c * pt; for (const k of M) { const a = A[ca + (k / tw | 0) * aw + k % tw]; s += a; s2 += a * a; sp += a * T[ct + k]; } }
+  const am = s / n, asd = Math.sqrt(Math.max(1e-6, s2 / n - am * am));
+  return (sp / n - am * tm) / (asd * tsd);
+}
+function stats(T, M, pt) { let s = 0, s2 = 0; for (let c = 0; c < 3; c++) for (const k of M) { const x = T[c * pt + k]; s += x; s2 += x * x; } const n = 3 * M.length, m = s / n; return [m, Math.sqrt(Math.max(1e-6, s2 / n - m * m))]; }
+const uvToPx = (uv) => [(uv[0] + 1) / 2 * TRK.W, (uv[1] + 1) / 2 * TRK.H];
+const pxToUv = (p) => [p[0] / TRK.W * 2 - 1, p[1] / TRK.H * 2 - 1];
+const bboxPx = poly => { const P2 = poly.map(uvToPx), xs = P2.map(p => p[0]), ys = P2.map(p => p[1]); return [Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)]; };
+
+/* ---------- tracker ---------- */
+async function trackObject(o, dir) {
+  if (OBJ.job) return;
+  if (!S.playable) { status('Tracking needs decodable video', 'badc'); return; }
+  P.pause();
+  const seed = objAt(o, P.time());
+  if (!seed) { status(o.code + ' is not present at the playhead — move to a frame where it is shown, or Redraw', 'badc'); return; }
+  const v = await trkVideo(); if (!v) { status('Tracker could not open the video', 'badc'); return; }
+  const job = OBJ.job = { o, dir, cancel: false, n: 0 };
+  // bound by the next analyst keyframe in this direction; replace old tracker samples in that span
+  const stopAt = dir > 0 ? (o.samples.find(s => s.src === 'analyst' && s.t > seed.t + 1e-3) || { t: S.dur }).t : ([...o.samples].reverse().find(s => s.src === 'analyst' && s.t < seed.t - 1e-3) || { t: 0 }).t;
+  o.samples = o.samples.filter(s => s.src === 'analyst' || (dir > 0 ? (s.t <= seed.t + 1e-6 || s.t >= stopAt - 1e-6) : (s.t >= seed.t - 1e-6 || s.t <= stopAt + 1e-6)));
+  if (seed.src === 'interp') addSample(o, { ...seed, src: 'tracker' });
+  let G = await grabRGB(seed.t + 1e-3), [bx, by, bw, bh] = bboxPx(seed.poly);
+  const f = Math.max(1, Math.max(bw, bh) / 40), TW = Math.max(8, Math.round(bw / f)), TH = Math.max(8, Math.round(bh / f));
+  const sc0 = polyC(seed.poly), mpoly = seed.poly.map(p => { const q = uvToPx([sc0[0] + (p[0] - sc0[0]) * 1.0, sc0[1] + (p[1] - sc0[1]) * 1.0]); return [(q[0] - bx) / bw * TW, (q[1] - by) / bh * TH]; });
+  let M = []; for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) if (pointInPoly(i + 0.5, j + 0.5, mpoly)) M.push(j * TW + i);
+  if (M.length < 16) M = [...Array(TW * TH).keys()];
+  M = Int32Array.from(M); const PT = TW * TH;
+  let T = sampleRect(G, TRK.W, TRK.H, bx, by, bw, bh, TW, TH), [tm, tsd] = stats(T, M, PT);
+  if (tsd < 12) { M = Int32Array.from(Array(PT).keys()); [tm, tsd] = stats(T, M, PT); } // flat interior: keep the edges and context
+  const T0 = T.slice(), [t0m, t0sd] = stats(T0, M, PT); // analyst template: anchors against update drift
+  let prev = { ...seed, poly: seed.poly.map(p => [...p]) }, vel = { gN: 0, gE: 0, u: 0, v: 0 }, lowRun = 0, why = 'end of span', suspect = [], lastGood = prev;
+  let fi = frameIndex(seed.t);
+  while (!job.cancel) {
+    fi += dir * CFG.trackStep;
+    if (fi < 0 || fi >= S.frames.length) { why = 'end of video'; break; }
+    const t = S.frames[fi];
+    if (dir > 0 ? t >= stopAt - 1e-6 : t <= stopAt + 1e-6) { why = (dir > 0 ? stopAt < S.dur : stopAt > 0) ? 'reached analyst keyframe' : (dir > 0 ? 'end of video' : 'start of video'); break; }
+    const dt = t - prev.t;
+    // prediction: ground-anchored via the camera model where possible, else image-space motion
+    let pred = null;
+    if (S.track && prev.g) {
+      const st0 = S.track.at(prev.t), P0 = makeProjector(st0), st1 = S.track.at(t), P1 = makeProjector(st1);
+      if (P0 && P1) {
+        const mLat = mpdLat(prev.g.lat), mLon = mpdLon(prev.g.lat);
+        const gp = prev.poly.map(p => P0.toGround(p[0], p[1]));
+        if (gp.every(q => q && !q.horizon)) {
+          const moved = gp.map(q => P1.toImage(q.lat + vel.gN * dt / mLat, q.lon + vel.gE * dt / mLon, q.h));
+          if (moved.every(Boolean)) pred = moved;
+        }
+      }
+    }
+    if (!pred) pred = prev.poly.map(p => [p[0] + vel.u * dt, p[1] + vel.v * dt]);
+    const imgPred = prev.poly.map(p => [p[0] + vel.u * dt, p[1] + vel.v * dt]);
+    G = await grabRGB(t + 1e-3);
+    // two hypotheses: camera-model (ground-anchored) and image-motion; keep the better match
+    const hyps = [pred];
+    { const a0 = bboxPx(pred), a1 = bboxPx(imgPred); if (Math.hypot(a0[0] - a1[0], a0[1] - a1[1]) > 2) hyps.push(imgPred); }
+    let best = { sc: -2 }, inFrame = false;
+    for (const hp of hyps) {
+      const [px, py, pw, ph] = bboxPx(hp);
+      if (px + pw < 0 || py + ph < 0 || px > TRK.W || py > TRK.H) continue;
+      inFrame = true;
+      const R = Math.round(clamp(10 + Math.hypot(vel.u * TRK.W / 2, vel.v * TRK.H / 2) * dt * 2, 10, 48) / f);
+      for (const s of [0.94, 1, 1.06]) {
+        const cw = pw * s, ch = ph * s, cx = px + pw / 2, cy = py + ph / 2;
+        const aw = TW + 2 * R, ah = TH + 2 * R, ux = cw / TW, uy = ch / TH;
+        const A = sampleRect(G, TRK.W, TRK.H, cx - cw / 2 - R * ux, cy - ch / 2 - R * uy, aw * ux, ah * uy, aw, ah);
+        let lb = { sc: -2 };
+        for (let oy = 0; oy <= 2 * R; oy += 2) for (let ox = 0; ox <= 2 * R; ox += 2) { const sc = nccAt(A, aw, ah, T, TW, TH, ox, oy, tm, tsd, M); if (sc > lb.sc) lb = { sc, ox, oy }; }
+        for (let oy = Math.max(0, lb.oy - 1); oy <= Math.min(2 * R, lb.oy + 1); oy++) for (let ox = Math.max(0, lb.ox - 1); ox <= Math.min(2 * R, lb.ox + 1); ox++) { const sc = nccAt(A, aw, ah, T, TW, TH, ox, oy, tm, tsd, M); if (sc > lb.sc) lb = { sc, ox, oy }; }
+        if (s !== 1) lb.sc -= 0.02; // a scale change must earn its place
+        if (lb.sc > best.sc) best = { ...lb, s, A, aw, ah, ux, uy, R, hp, box: [px, py, pw, ph] };
+      }
+    }
+    if (!inFrame) { why = 'left the frame'; break; }
+    // drift correction (Matthews et al. 2004): refine with the analyst's original template near the match
+    let agree = false;
+    if (best.A) {
+      let a0 = { sc: -2 };
+      for (let oy = Math.max(0, best.oy - 3); oy <= Math.min(2 * best.R, best.oy + 3); oy++) for (let ox = Math.max(0, best.ox - 3); ox <= Math.min(2 * best.R, best.ox + 3); ox++) { const sc = nccAt(best.A, best.aw, best.ah, T0, TW, TH, ox, oy, t0m, t0sd, M); if (sc > a0.sc) a0 = { sc, ox, oy }; }
+      if (a0.sc >= CFG.trackMinScore) { agree = Math.abs(a0.ox - best.ox) <= 1 && Math.abs(a0.oy - best.oy) <= 1; best.ox = a0.ox; best.oy = a0.oy; best.sc = Math.max(a0.sc, Math.min(best.sc, a0.sc + 0.1)); }
+    }
+    const [px, py, pw, ph] = best.box, R = best.R;
+    const dxp = (best.ox - R) * best.ux, dyp = (best.oy - R) * best.uy, ccx = px + pw / 2, ccy = py + ph / 2;
+    // innovation gate: a match far from the motion prediction is suspect (stops runaway on background)
+    const innov = Math.hypot(dxp, dyp) * 960 / TRK.W, gate = job.n >= 3 && innov > CFG.trackGate * CFG.trackStep;
+    if (best.sc < CFG.trackMinScore || gate) { if (++lowRun >= 2) { suspect.forEach(st => { const i = o.samples.indexOf(st); if (i >= 0) o.samples.splice(i, 1); }); prev = lastGood; why = gate ? 'lost (jump ' + innov.toFixed(0) + ' px)' : 'lost (match ' + best.sc.toFixed(2) + ')'; break; } }
+    else lowRun = 0;
+    const poly = best.hp.map(p => { const q = uvToPx(p); return pxToUv([ccx + (q[0] - ccx) * best.s + dxp, ccy + (q[1] - ccy) * best.s + dyp]); });
+    const c = polyC(poly), g = groundOf(t, c);
+    // velocity (smoothed)
+    const a = 0.5;
+    if (!gate && g && prev.g && dt) { const mLat = mpdLat(g.lat), mLon = mpdLon(g.lat); vel.gN = lerp(vel.gN, (g.lat - prev.g.lat) * mLat / dt, a); vel.gE = lerp(vel.gE, (g.lon - prev.g.lon) * mLon / dt, a); }
+    if (!gate && dt) { vel.u = lerp(vel.u, (c[0] - prev.c[0]) / dt, a); vel.v = lerp(vel.v, (c[1] - prev.c[1]) / dt, a); }
+    const smp = { t, poly, c, g, conf: +best.sc.toFixed(3), src: 'tracker' };
+    addSample(o, smp); prev = smp;
+    if (lowRun) suspect.push(smp); else { suspect = []; lastGood = smp; }
+    // template update (slow) on confident matches
+    if (agree && best.sc > 0.75) { const NT = new Float32Array(3 * TW * TH); for (let c = 0; c < 3; c++) for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) NT[c * TW * TH + j * TW + i] = best.A[c * best.aw * best.ah + (best.oy + j) * best.aw + best.ox + i]; for (let k = 0; k < T.length; k++) T[k] = T[k] * 0.85 + NT[k] * 0.15; [tm, tsd] = stats(T, M, PT); }
+    if (++job.n % 8 === 0) { status(o.code + ' tracking ' + (dir > 0 ? '▶ ' : '◀ ') + tcAt(t) + ' · match ' + best.sc.toFixed(2) + ' · Esc stops'); seek(t); await new Promise(r => setTimeout(r)); }
+  }
+  if (job.cancel) why = 'stopped by analyst';
+  o.status = 'tracked ' + (dir > 0 ? 'forward' : 'backward') + ': ' + job.n + ' frames, ' + why;
+  OBJ.job = null; _objPolyCache.clear(); objectsChanged(); buildObjPane(); status(o.code + ' ' + o.status); seek(prev.t); dirty();
+}
+
+/* ---------- movement patterns ---------- */
+function objGround(o) { return o.samples.filter(s => s.g).map(s => ({ t: s.t, lat: s.g.lat, lon: s.g.lon })); }
+function objKinematics(o) {
+  const G0 = objGround(o); if (G0.length < 2) return [];
+  const win = 0.5;
+  const sm = G0.map(p => { const w = G0.filter(q => Math.abs(q.t - p.t) <= win); return { t: p.t, lat: w.reduce((s, q) => s + q.lat, 0) / w.length, lon: w.reduce((s, q) => s + q.lon, 0) / w.length }; });
+  return sm.map((p, i) => {
+    const a = sm[Math.max(0, bsearchLE(sm, p.t - 0.5, x => x.t))], b = sm[Math.min(sm.length - 1, bsearchLE(sm, p.t + 0.5, x => x.t))];
+    const dt = b.t - a.t, n = (b.lat - a.lat) * mpdLat(p.lat), e = (b.lon - a.lon) * mpdLon(p.lat);
+    return { ...p, spd: dt > 0 ? Math.hypot(n, e) / dt : 0, hdg: wrap360(Math.atan2(e, n) * R2D) };
+  });
+}
+function objStats(o) {
+  const K = objKinematics(o); if (!K.length) return null;
+  let dist = 0; for (let i = 1; i < K.length; i++) dist += Math.hypot((K[i].lat - K[i - 1].lat) * mpdLat(K[i].lat), (K[i].lon - K[i - 1].lon) * mpdLon(K[i].lat));
+  const mv = K.filter(k => k.spd >= CFG.stopSpeed), sx = mv.reduce((s, k) => s + Math.sin(k.hdg * D2R), 0), cx = mv.reduce((s, k) => s + Math.cos(k.hdg * D2R), 0);
+  const stops = []; let cur = null;
+  for (const k of K) { if (k.spd < CFG.stopSpeed) { if (!cur) cur = { t0: k.t, t1: k.t, lat: k.lat, lon: k.lon }; else cur.t1 = k.t; } else { if (cur && cur.t1 - cur.t0 >= CFG.stopMin) stops.push(cur); cur = null; } }
+  if (cur && cur.t1 - cur.t0 >= CFG.stopMin) stops.push(cur);
+  return { t0: K[0].t, t1: K[K.length - 1].t, dist, mean: mv.length ? mv.reduce((s, k) => s + k.spd, 0) / mv.length : 0, max: Math.max(...K.map(k => k.spd)), hdg: mv.length ? wrap360(Math.atan2(sx, cx) * R2D) : null, stops, K };
+}
+function objPosAt(K, t) { const i = bsearchLE(K, t, k => k.t); if (i < 0 || i >= K.length - 1) return (i === K.length - 1 && Math.abs(K[i].t - t) < 0.5) ? K[i] : null; const a = K[i], b = K[i + 1]; if (b.t - a.t > 2) return null; const f = (t - a.t) / (b.t - a.t); return { lat: lerp(a.lat, b.lat, f), lon: lerp(a.lon, b.lon, f) }; }
+function pairEvents() {
+  const ev = [], st = OBJ.list.map(o => ({ o, s: objStats(o) })).filter(x => x.s);
+  for (let i = 0; i < st.length; i++) for (let j = i + 1; j < st.length; j++) {
+    const A = st[i], B = st[j], t0 = Math.max(A.s.t0, B.s.t0), t1 = Math.min(A.s.t1, B.s.t1); if (t1 <= t0) continue;
+    let min = { d: Infinity }, run = null; const runs = [];
+    for (let t = t0; t <= t1; t += 0.5) {
+      const a = objPosAt(A.s.K, t), b = objPosAt(B.s.K, t); if (!a || !b) { run = null; continue; }
+      const d = Math.hypot((a.lat - b.lat) * mpdLat(a.lat), (a.lon - b.lon) * mpdLon(a.lat));
+      if (d < min.d) min = { d, t };
+      if (d <= CFG.nearDist) { if (!run) { run = { t0: t, t1: t }; runs.push(run); } else run.t1 = t; } else run = null;
+    }
+    if (isFinite(min.d)) ev.push({ kind: 'closest', a: A.o, b: B.o, t: min.t, d: min.d });
+    runs.filter(r => r.t1 - r.t0 >= CFG.stopMin).forEach(r => ev.push({ kind: 'together', a: A.o, b: B.o, t: r.t0, t1: r.t1 }));
+  }
+  return ev;
+}
+
+/* ---------- persistence ---------- */
+const objKey = () => 'miv-objects:' + S.name + ':' + S.size;
+let objSaveTimer = null;
+function objectsChanged() {
+  try { localStorage.setItem(objKey(), JSON.stringify(OBJ.list)); } catch (e) { }
+  if (typeof libObjectsChanged === 'function') { clearTimeout(objSaveTimer); objSaveTimer = setTimeout(libObjectsChanged, 800); }
+  dirty();
+}
+async function loadObjects() {
+  OBJ.list = []; OBJ.sel = null; OBJ.drawing = null; _objPolyCache.clear();
+  let got = null;
+  if (S.libItemId && typeof libLoadObjects === 'function') got = await libLoadObjects(S.libItemId);
+  if (!got) try { const j = localStorage.getItem(objKey()); if (j) got = JSON.parse(j); } catch (e) { }
+  OBJ.list = Array.isArray(got) ? got : [];
+  buildObjPane(); dirty();
+}
+
+/* ---------- exports ---------- */
+const objUTC = t => { const st = S.track ? S.track.at(t) : null; return st && isNum(st.ts) ? new Date(st.ts / 1000).toISOString() : null; };
+function objectsGeoJSON(list = OBJ.list) {
+  const F = [];
+  for (const o of list) {
+    const K = objKinematics(o), base = { id: o.id, code: o.code, label: o.label, class: o.cls, description: o.desc, source_video: S.name, provenance: 'analyst-tagged, tracker-propagated (sensor-model-aided NCC)' };
+    if (K.length > 1) F.push({ type: 'Feature', properties: { ...base, kind: 'track', t0: K[0].t, t1: K[K.length - 1].t, utc0: objUTC(K[0].t), utc1: objUTC(K[K.length - 1].t), times: K.map(k => +k.t.toFixed(3)) }, geometry: { type: 'LineString', coordinates: K.map(k => [+k.lon.toFixed(7), +k.lat.toFixed(7)]) } });
+    for (const s of o.samples) if (s.g) { const k = K.find(x => Math.abs(x.t - s.t) < 1e-6); F.push({ type: 'Feature', properties: { ...base, kind: 'sample', t: +s.t.toFixed(3), timecode: tcAt(s.t), utc: objUTC(s.t), src: s.src, conf: s.conf, speed_ms: k ? +k.spd.toFixed(2) : null, heading_deg: k ? +k.hdg.toFixed(1) : null }, geometry: { type: 'Point', coordinates: [+s.g.lon.toFixed(7), +s.g.lat.toFixed(7), +(s.g.h || 0).toFixed(1)] } }); }
+  }
+  return { type: 'FeatureCollection', name: (S.name || '') + ' objects', features: F };
+}
+function exportObjects(kind, list) {
+  list = list || OBJ.list; if (!list.length) return;
+  const base = (S.name || 'misb').replace(/\.[^.]+$/, '') + (list.length === 1 ? '_' + list[0].code : '_objects');
+  if (kind === 'geojson') return download(base + '.geojson', JSON.stringify(objectsGeoJSON(list)), 'application/geo+json');
+  if (kind === 'csv') {
+    const rows = ['object_id,code,label,class,t,timecode,utc,src,conf,lat,lon,h,speed_ms,heading_deg'];
+    for (const o of list) { const K = objKinematics(o); for (const s of o.samples) { const k = K.find(x => Math.abs(x.t - s.t) < 1e-6); rows.push([o.id, o.code, csvCell(o.label), csvCell(o.cls), s.t.toFixed(3), tcAt(s.t), objUTC(s.t) || '', s.src, s.conf, s.g ? s.g.lat.toFixed(7) : '', s.g ? s.g.lon.toFixed(7) : '', s.g ? fx(s.g.h, 1) : '', k ? k.spd.toFixed(2) : '', k ? k.hdg.toFixed(1) : ''].join(',')); } }
+    return download(base + '.csv', rows.join('\n'), 'text/csv');
+  }
+  // KML: gx:Track (time-animated in Google Earth) when UTC is known, else LineString
+  const x = s => esc(String(s ?? ''));
+  const kc = c => { const m = c.replace('#', ''); return 'ff' + m.slice(4, 6) + m.slice(2, 4) + m.slice(0, 2); };
+  let k = '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2"><Document><name>' + x(S.name) + ' objects</name>';
+  for (const o of list) {
+    const K = objKinematics(o); if (!K.length) continue;
+    k += '<Style id="s' + o.code + '"><LineStyle><color>' + kc(o.color) + '</color><width>3</width></LineStyle><IconStyle><color>' + kc(o.color) + '</color></IconStyle></Style>';
+    k += '<Placemark><name>' + x(o.code + ' ' + o.label) + '</name><description>' + x([o.cls, o.desc, 'id ' + o.id, 'source ' + S.name].filter(Boolean).join(' | ')) + '</description><styleUrl>#s' + o.code + '</styleUrl>';
+    if (K.every(q => objUTC(q.t))) k += '<gx:Track><altitudeMode>clampToGround</altitudeMode>' + K.map(q => '<when>' + objUTC(q.t) + '</when>').join('') + K.map(q => '<gx:coord>' + q.lon.toFixed(7) + ' ' + q.lat.toFixed(7) + ' 0</gx:coord>').join('') + '</gx:Track>';
+    else k += '<LineString><tessellate>1</tessellate><coordinates>' + K.map(q => q.lon.toFixed(7) + ',' + q.lat.toFixed(7)).join(' ') + '</coordinates></LineString>';
+    k += '</Placemark>';
+  }
+  download(base + '.kml', k + '</Document></kml>', 'application/vnd.google-earth.kml+xml');
+}
+
+/* ---------- OBJECTS pane ---------- */
+function buildObjPane(keep) {
+  const p = $('#pObjects'); if (!p) return; p.innerHTML = '';
+  const fmtS = v => isNum(v) ? (v * 3.6).toFixed(1) + ' km/h' : '–';
+  p.append(h('h3', null, 'Objects of interest'),
+    h('div', { class: 'btns' },
+      h('button', { class: OBJ.drawing ? 'on' : '', onclick: () => OBJ.drawing ? cancelTag() : startTag(), disabled: !S.dur }, OBJ.drawing ? 'Drawing… (Esc)' : '◇ Tag object (T)'),
+      OBJ.job ? h('button', { onclick: () => { OBJ.job.cancel = true; } }, '■ Stop tracking') : null,
+      h('button', { onclick: () => exportObjects('geojson'), disabled: !OBJ.list.length }, 'GeoJSON'),
+      h('button', { onclick: () => exportObjects('kml'), disabled: !OBJ.list.length }, 'KML'),
+      h('button', { onclick: () => exportObjects('csv'), disabled: !OBJ.list.length }, 'CSV')),
+    h('div', { class: 'note' }, 'Pause on a frame, tag the object (polygon or box), name it, then Track ▶ / ◀ Track. The camera model predicts where the object re-appears; image matching finds its own movement. Redraw at any frame to correct drift — tracker runs stop at analyst keyframes.' + (S.tier && !geomOK() ? ' This file has no sensor geometry (tier ' + S.tier.eff + '), so tracks stay in image space without ground positions.' : '')),
+    h('div', { class: 'grid2' },
+      h('label', null, 'Track every Nth frame'), h('select', { onchange: e => { CFG.trackStep = +e.target.value; } }, [1, 2, 3, 5].map(n => h('option', { value: n, selected: CFG.trackStep === n }, n))),
+      h('label', null, 'Min match score'), h('input', { type: 'number', step: 0.05, value: CFG.trackMinScore, onchange: e => { CFG.trackMinScore = +e.target.value; } })));
+  if (!OBJ.list.length) { p.append(h('p', { class: 'muted' }, 'No objects tagged.')); return; }
+  for (const o of OBJ.list) {
+    const st = objStats(o), an = o.samples.filter(s => s.src === 'analyst').length, sel = o.id === OBJ.sel;
+    const span = o.samples.length ? [o.samples[0].t, o.samples[o.samples.length - 1].t] : null;
+    p.append(h('div', { class: 'mark' + (sel ? ' sel' : ''), onclick: e => { if (e.target.matches('input,textarea,select,button')) return; OBJ.sel = o.id; buildObjPane(); dirty(); } },
+      h('div', { class: 'row' }, h('span', { style: 'display:inline-block;width:12px;height:12px;background:' + o.color }), h('b', { class: 'accc' }, o.code), h('span', { class: 'dim', title: o.id }, o.id.slice(0, 8) + '…'), h('span', { style: 'margin-left:auto' }),
+        h('button', { title: 'Track forward from the playhead', disabled: !!OBJ.job, onclick: () => trackObject(o, 1) }, 'Track ▶'),
+        h('button', { title: 'Track backward from the playhead', disabled: !!OBJ.job, onclick: () => trackObject(o, -1) }, '◀ Track'),
+        h('button', { title: 'Redraw at the current frame (analyst keyframe)', onclick: () => startTag(o.id) }, 'Redraw'),
+        h('button', { onclick: () => { OBJ.confirmDel = o.id; buildObjPane(); } }, '×')),
+      h('div', { class: 'grid2' },
+        h('label', null, 'Label'), h('input', { type: 'text', value: o.label, placeholder: 'e.g. white ute', oninput: e => { o.label = e.target.value; objectsChanged(); } }),
+        h('label', null, 'Class'), h('input', { type: 'text', value: o.cls, list: 'objClasses', placeholder: 'vehicle, person, vessel…', oninput: e => { o.cls = e.target.value; objectsChanged(); } })),
+      h('textarea', { placeholder: 'description', oninput: e => { o.desc = e.target.value; objectsChanged(); } }, o.desc || ''),
+      h('div', { class: 'muted' }, (span ? tcOf(span[0]) + ' → ' + tcOf(span[1]) : '') + ' · ' + o.samples.length + ' samples (' + an + ' analyst)' + (o.status ? ' · ' + o.status : '')),
+      st ? h('div', { class: 'dim' }, 'path ' + (st.dist >= 1000 ? (st.dist / 1000).toFixed(2) + ' km' : st.dist.toFixed(0) + ' m') + ' · mean ' + fmtS(st.mean) + ' · max ' + fmtS(st.max) + (isNum(st.hdg) ? ' · heading ' + st.hdg.toFixed(0) + '°T' : '') + ' · ' + st.stops.length + ' stop(s)') : null,
+      h('div', { class: 'btns' }, h('button', { onclick: () => { if (span) { P.pause(); seek(span[0]); } } }, 'Go to start'), h('button', { onclick: () => { if (span) { S.inT = span[0]; S.outT = span[1]; buildExportPane(); dirty(); } } }, 'Set clip'), h('button', { onclick: () => exportObjects('geojson', [o]) }, 'GeoJSON'), h('button', { onclick: () => exportObjects('kml', [o]) }, 'KML')),
+      OBJ.confirmDel === o.id ? h('div', { class: 'note badc', style: 'border:1px solid var(--bad);padding:6px' }, 'Delete ' + o.code + (o.label ? ' (' + o.label + ')' : '') + ' and its ' + o.samples.length + ' track samples? This cannot be undone.', h('div', { class: 'btns' }, h('button', { style: 'border-color:var(--bad);color:var(--bad)', onclick: () => { OBJ.list = OBJ.list.filter(x => x !== o); OBJ.confirmDel = null; objectsChanged(); buildObjPane(); } }, 'Delete'), h('button', { onclick: () => { OBJ.confirmDel = null; buildObjPane(); } }, 'Cancel'))) : null));
+  }
+  // movement patterns
+  const ev = [];
+  for (const o of OBJ.list) { const st = objStats(o); if (st) st.stops.forEach(s => ev.push({ t: s.t0, txt: o.code + ' stopped ' + (s.t1 - s.t0).toFixed(0) + ' s', o })); }
+  for (const e of pairEvents()) ev.push(e.kind === 'closest' ? { t: e.t, txt: e.a.code + ' ↔ ' + e.b.code + ' closest ' + e.d.toFixed(0) + ' m' } : { t: e.t, txt: e.a.code + ' + ' + e.b.code + ' within ' + CFG.nearDist + ' m for ' + (e.t1 - e.t).toFixed(0) + ' s' });
+  ev.sort((a, b) => a.t - b.t);
+  p.append(h('h3', null, 'Movement patterns'),
+    h('div', { class: 'grid2' },
+      h('label', null, 'Stop below km/h'), h('input', { type: 'number', step: 0.5, value: +(CFG.stopSpeed * 3.6).toFixed(1), onchange: e => { CFG.stopSpeed = +e.target.value / 3.6; buildObjPane(); } }),
+      h('label', null, 'Stop / together ≥ s'), h('input', { type: 'number', step: 1, value: CFG.stopMin, onchange: e => { CFG.stopMin = +e.target.value; buildObjPane(); } }),
+      h('label', null, 'Together within m'), h('input', { type: 'number', step: 5, value: CFG.nearDist, onchange: e => { CFG.nearDist = +e.target.value; buildObjPane(); } })),
+    ev.length ? h('table', null, ev.map(e => h('tr', { style: 'cursor:pointer', onclick: () => { P.pause(); seek(e.t); } }, h('td', { class: 'k' }, tcOf(e.t)), h('td', null, e.txt)))) : h('p', { class: 'muted' }, 'No events yet — track objects to see stops, closest approaches and co-movement.'),
+    h('datalist', { id: 'objClasses' }, CLASSES.map(c => h('option', { value: c }))));
 }
 
 /* =====================================================================
