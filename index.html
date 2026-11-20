@@ -23,7 +23,8 @@ input[type=text]{width:100%}
 input[type=range]{padding:0;accent-color:var(--acc)}
 input[type=checkbox]{accent-color:var(--acc);vertical-align:-2px}
 select{max-width:100%}
-#app{display:grid;grid-template-rows:auto auto 1fr;height:100%}
+#app{display:flex;flex-direction:column;height:100%}
+main{flex:1 1 auto}
 #secbar{display:none;text-align:center;font-weight:bold;letter-spacing:.12em;padding:2px;background:#2d6a2d;color:#fff}
 #secbar.show{display:block}
 header{display:flex;align-items:center;gap:10px;padding:5px 10px;background:var(--p1);border-bottom:1px solid var(--line)}
@@ -172,7 +173,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.2.0', build: 2 };
+const BUILD = { ver: 'R0.2.1', build: 3 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -1906,8 +1907,8 @@ Object.assign(CFG, {
   takeoffElev: '',     // m MSL; blank = DEM at first fix, else flat fallback
   lensMm: 24,          // 35 mm-equivalent focal length when FOV is not recorded
   hfovOverride: 0,     // deg; 0 = use metadata / lens
-  gimbalYawRel: false, // gimbal yaw recorded relative to airframe
-  logSegment: 0,       // flight-log video segment index
+  gimbalYawMode: 'auto', // auto | abs | rel — gimbal yaw absolute (true) or relative to airframe
+  logSegment: -1,      // flight-log video segment index (-1 = longest)
 });
 
 const fovFromEq = (f, zoom) => { if (!isNum(f) || f <= 0) return null; const ff = f; return 2 * Math.atan(18 / (ff * (zoom > 0 ? zoom : 1))) * R2D; };
@@ -1916,7 +1917,9 @@ const fovFromEq = (f, zoom) => { if (!isNum(f) || f <= 0) return null; const ff 
 function dronePose(o) {
   const f = { ts: o.ts, sensLat: o.lat, sensLon: o.lon, relAlt: o.relAlt, absAlt: o.absAlt, droneYaw: o.droneYaw, dronePitch: o.dronePitch, droneRoll: o.droneRoll, platform: o.platform, sensor: o.sensor, src: o.src };
   let yaw = o.yaw;
-  if (isNum(yaw) && CFG.gimbalYawRel && isNum(o.droneYaw)) yaw = o.droneYaw + yaw;
+  const rel = CFG.gimbalYawMode === 'rel' || (CFG.gimbalYawMode === 'auto' && o.yawRel);
+  if (isNum(yaw) && rel && isNum(o.droneYaw)) yaw = o.droneYaw + yaw;
+  f.gimbalYaw = rel ? 'relative (+ drone yaw)' : (isNum(o.yaw) ? 'absolute' : undefined);
   if (!isNum(yaw) && isNum(o.pitch) && isNum(o.droneYaw)) yaw = o.droneYaw;
   if (isNum(yaw) && isNum(o.pitch)) Object.assign(f, { platHdg: wrap360(yaw), platPitch: 0, platRoll: 0, relAz: 0, relEl: o.pitch, relRoll: o.roll || 0 });
   let hf = CFG.hfovOverride > 0 ? CFG.hfovOverride : (isNum(o.hfov) ? o.hfov : (isNum(o.focal) ? fovFromEq(o.focal, o.zoom) : fovFromEq(CFG.lensMm, o.zoom)));
@@ -1925,7 +1928,7 @@ function dronePose(o) {
   if (o.extra) Object.assign(f, o.extra);
   return f;
 }
-const DRONE_NAMES = { localTime: 'Camera local time (not UTC)', relAlt: 'Height above take-off / ground distance', absAlt: 'Recorded absolute altitude', droneYaw: 'Drone yaw', dronePitch: 'Drone pitch', droneRoll: 'Drone roll', hfovSrc: 'HFOV source', src: 'Telemetry source', focal: 'Focal length (35 mm eq.)', zoom: 'Digital zoom', iso: 'ISO', shutter: 'Shutter', fnum: 'F-number', frameCnt: 'Frame count', sats: 'GNSS satellites', groundDist: 'Ground distance', batt: 'Battery %' };
+const DRONE_NAMES = { gimbalYaw: 'Gimbal yaw convention', localTime: 'Camera local time (not UTC)', relAlt: 'Height above take-off / ground distance', absAlt: 'Recorded absolute altitude', droneYaw: 'Drone yaw', dronePitch: 'Drone pitch', droneRoll: 'Drone roll', hfovSrc: 'HFOV source', src: 'Telemetry source', focal: 'Focal length (35 mm eq.)', zoom: 'Digital zoom', iso: 'ISO', shutter: 'Shutter', fnum: 'F-number', frameCnt: 'Frame count', sats: 'GNSS satellites', groundDist: 'Ground distance', batt: 'Battery %' };
 const DRONE_UNITS = { relAlt: 'm', absAlt: 'm', droneYaw: '°', dronePitch: '°', droneRoll: '°' };
 function droneRec(t, f, raw, o) {
   const items = [];
@@ -2117,39 +2120,53 @@ function parseDJISrt(text) {
 }
 
 /* ---------------- flight-log CSV (AirData, Litchi, similar) ---------------- */
-function isFlightLogHeader(hdr) { const j = hdr.join('|').toLowerCase(); return /gimbal[_ ]?(pitch|heading|yaw)/.test(j) || /isvideo|iscapturingvideo/.test(j); }
+function isFlightLogHeader(hdr) { const j = hdr.join('|').toLowerCase(); return /gimbal[_ .]?(pitch|heading|yaw)/.test(j) || /isvideo|iscapturingvideo|istakingvideo/.test(j); }
 function parseFlightLogCSV(rows, hdr) {
   const H = hdr.map(x => x.trim().toLowerCase());
   const col = (...res) => { for (const re of res) { const i = H.findIndex(h => re.test(h)); if (i >= 0) return i; } return -1; };
-  const ft = i => i >= 0 && /feet|\(ft\)/.test(H[i]) ? 0.3048 : 1;
+  const ft = i => i >= 0 && /feet|\(ft\)|\[ft\]/.test(H[i]) ? 0.3048 : 1;
   const C = {
-    lat: col(/^latitude/, /^lat\b/), lon: col(/^longitude/, /^lon/),
-    rel: col(/height_above_takeoff/, /^altitude\(/, /^height\b/, /relative/), abs: col(/altitude_above_sealevel/, /altitude.*(msl|sea)/),
-    gYaw: col(/gimbal_heading/, /gimbal.*yaw/), gPitch: col(/gimbal_pitch/, /gimbal.*pitch/), gRoll: col(/gimbal_roll/, /gimbal.*roll/),
-    dYaw: col(/compass_heading/, /^heading/, /^yaw/), dPitch: col(/^pitch\(/, /^pitch$/), dRoll: col(/^roll\(/, /^roll$/),
-    tms: col(/time\(millisecond\)/, /^time\(ms\)/, /offsettime/, /flytime/), utc: col(/datetime\(utc\)/, /^datetime/, /^date_time/), vid: col(/isvideo/, /iscapturingvideo/),
+    lat: col(/^latitude/, /^osd\.latitude/, /^lat\b/), lon: col(/^longitude/, /^osd\.longitude/, /^lon/),
+    rel: col(/height_above_takeoff/, /^osd\.height/, /^altitude\((meters|m|feet|ft)\)/, /^altitude\(/, /^height\b/, /relative/), abs: col(/altitude_above_sealevel/, /asl/, /^osd\.altitude/, /altitude.*(msl|sea)/),
+    gYaw: col(/gimbal_heading/, /^gimbal\.yaw$/, /^gimbalyaw/, /gimbal.*yaw/), gPitch: col(/gimbal_pitch/, /^gimbal\.pitch$/, /^gimbalpitch/, /gimbal.*pitch/), gRoll: col(/gimbal_roll/, /^gimbal\.roll$/, /^gimbalroll/, /gimbal.*roll/),
+    dYaw: col(/compass_heading/, /^osd\.yaw$/, /^yaw$/, /^heading/, /^yaw\(/), dPitch: col(/^pitch\(/, /^osd\.pitch$/, /^pitch$/), dRoll: col(/^roll\(/, /^osd\.roll$/, /^roll$/),
+    tms: col(/time\(millisecond\)/, /^time\(millis\)/, /^time\(ms\)/, /offsettime/), utc: col(/datetime\(utc\)/, /^custom\.updatetime/, /^datetime/, /^date_time/), fly: col(/^osd\.flytime/, /flytime/),
+    vid: col(/isvideo/, /istakingvideo/, /iscapturingvideo/),
   };
   const v = (r, i, k = 1) => i >= 0 && r[i] !== undefined && r[i] !== '' && !isNaN(+r[i]) ? +r[i] * k : null;
   const recs0 = [];
   for (const r of rows) {
     const lat = v(r, C.lat), lon = v(r, C.lon); if (!isNum(lat) || !isNum(lon) || (lat === 0 && lon === 0)) continue;
-    let tms = v(r, C.tms); if (isNum(tms) && C.tms >= 0 && !/milli|ms/.test(H[C.tms])) tms *= 1000;
-    const utcS = C.utc >= 0 ? r[C.utc] : null, utc = utcS ? Date.parse(utcS.replace(' ', 'T') + (/[zZ+]/.test(utcS) ? '' : 'Z')) : NaN;
-    recs0.push({ tms: isNum(tms) ? tms : (isNaN(utc) ? null : utc), video: C.vid >= 0 ? +r[C.vid] === 1 : null, o: { src: 'Flight log CSV', platform: 'DJI (flight log)', lat, lon, relAlt: v(r, C.rel, ft(C.rel)), absAlt: v(r, C.abs, ft(C.abs)), yaw: v(r, C.gYaw), pitch: v(r, C.gPitch), roll: v(r, C.gRoll), droneYaw: v(r, C.dYaw), dronePitch: v(r, C.dPitch), droneRoll: v(r, C.dRoll), ts: isNaN(utc) ? undefined : utc * 1000 } });
+    const utcS = C.utc >= 0 ? r[C.utc] : null, utc = utcS ? Date.parse(utcS.trim().replace(/\//g, '-').replace(' ', 'T') + (/[zZ+]/.test(utcS) ? '' : 'Z')) : NaN;
+    let tms = v(r, C.tms);
+    if (!isNum(tms)) tms = isNaN(utc) ? (isNum(v(r, C.fly)) ? v(r, C.fly) * 1000 : null) : utc;
+    const vs = C.vid >= 0 ? String(r[C.vid] || '').trim().toLowerCase() : '';
+    recs0.push({ tms, video: C.vid >= 0 ? (vs === '1' || vs === 'true' || vs === 'recording') : null, o: { src: 'Flight log CSV', platform: 'DJI (flight log)', lat, lon, relAlt: v(r, C.rel, ft(C.rel)), absAlt: v(r, C.abs, ft(C.abs)), yaw: v(r, C.gYaw), pitch: v(r, C.gPitch), roll: v(r, C.gRoll), droneYaw: v(r, C.dYaw), dronePitch: v(r, C.dPitch), droneRoll: v(r, C.dRoll), ts: isNaN(utc) || C.utc < 0 || !/utc/.test(H[C.utc]) ? undefined : utc * 1000 } });
   }
   if (!recs0.length) return { recs: [], segments: [] };
+  { // gimbal yaw convention: absolute if it tracks drone heading, else relative to the airframe
+    const d = (a, b) => Math.abs(((a - b + 540) % 360) - 180);
+    const pairs = recs0.filter(r => isNum(r.o.yaw) && isNum(r.o.droneYaw));
+    if (pairs.length > 10) {
+      const absErr = median(pairs.map(r => d(r.o.yaw, r.o.droneYaw))), relErr = median(pairs.map(r => d(r.o.yaw, 0)));
+      const spread = median(pairs.map(r => d(r.o.droneYaw, pairs[0].o.droneYaw)));
+      const yawRel = spread > 15 && relErr < absErr;
+      recs0.forEach(r => { r.o.yawRel = yawRel; });
+    }
+  }
   // video segments
   const segs = []; let cur = null;
   recs0.forEach((r, i) => { if (r.video) { if (!cur) { cur = { a: i, b: i }; segs.push(cur); } else cur.b = i; } else cur = null; });
   let t0 = recs0[0].tms ?? 0, lo = 0, hi = recs0.length - 1;
-  if (segs.length) { const sg = segs[clamp(CFG.logSegment, 0, segs.length - 1)]; t0 = recs0[sg.a].tms; lo = sg.a; hi = sg.b; }
+  const longest = segs.reduce((bi, s, i) => (s.b - s.a) > (segs[bi].b - segs[bi].a) ? i : bi, 0);
+  if (segs.length) { const sg = segs[CFG.logSegment >= 0 ? clamp(CFG.logSegment, 0, segs.length - 1) : longest]; t0 = recs0[sg.a].tms; lo = sg.a; hi = sg.b; }
   const pad = 5000, recs = [];
   for (const r of recs0) {
     if (!isNum(r.tms)) continue;
     if (segs.length && (r.tms < recs0[lo].tms - pad || r.tms > recs0[hi].tms + pad)) continue;
     recs.push(droneRec((r.tms - t0) / 1000 + CFG.klvOffset, dronePose(r.o), null, r.o));
   }
-  return { recs, segments: segs.map((s, i) => ({ i, start: recs0[s.a].tms, dur: (recs0[s.b].tms - recs0[s.a].tms) / 1000 })) };
+  return { recs, chosen: CFG.logSegment >= 0 ? clamp(CFG.logSegment, 0, Math.max(0, segs.length - 1)) : longest, segments: segs.map((s, i) => ({ i, start: recs0[s.a].tms, dur: (recs0[s.b].tms - recs0[s.a].tms) / 1000 })) };
 }
 
 /* ---------------- MP4 metadata-track dispatch ---------------- */
@@ -2636,7 +2653,7 @@ async function loadSidecar(file) {
         S.logRows = { rows: lines.slice(1).map(split), hdr };
         const fl = parseFlightLogCSV(S.logRows.rows, hdr); recs = fl.recs; S.logSegments = fl.segments;
         if (!recs.length) throw new Error('no positioned rows in flight log');
-        if (fl.segments.length > 1) S.warnings.push('Flight log has ' + fl.segments.length + ' video segments — using #' + (clamp(CFG.logSegment, 0, fl.segments.length - 1) + 1) + ' (change in Settings → Drone)');
+        if (fl.segments.length > 1) S.warnings.push('Flight log has ' + fl.segments.length + ' video segments — using #' + (fl.chosen + 1) + ' (' + fl.segments[fl.chosen].dur.toFixed(0) + ' s; change in Settings → Drone telemetry)'); S.logChosen = fl.chosen;
         if (!fl.segments.length) S.warnings.push('Flight log has no isVideo column — t = 0 is the first log row; adjust KLV time offset to sync');
       } else {
       const map = hdr.map(hh => { const n = norm(hh); if (['t', 'time', 'seconds', 'sec', 'elapsed'].includes(n)) return '__t'; return ALIAS.get(n) || null; });
@@ -2693,9 +2710,9 @@ function buildSetPane() {
       h('label', { title: 'Blank = DEM at first position, else flat fallback' }, 'Take-off ground m MSL'), h('input', { type: 'text', value: CFG.takeoffElev, placeholder: 'auto', onchange: e => { CFG.takeoffElev = e.target.value.trim(); rebuildTrack(); buildFilePane(); apply(false); } }),
       h('label', { title: 'Used when the metadata has no FOV or focal length' }, 'Lens (35 mm eq.) mm'), num('lensMm', false, 1, () => { rederiveDrone(); rebuildTrack(); buildFilePane(); }),
       h('label', null, 'HFOV override °'), num('hfovOverride', false, 0.1, () => { rederiveDrone(); rebuildTrack(); buildFilePane(); }),
-      h('label', null, 'Gimbal yaw relative'), h('input', { type: 'checkbox', checked: CFG.gimbalYawRel, onchange: e => { CFG.gimbalYawRel = e.target.checked; rederiveDrone(); rebuildTrack(); apply(false); } }),
-      ...(S.logSegments && S.logSegments.length > 1 ? [h('label', null, 'Flight-log video segment'), h('select', { onchange: e => { CFG.logSegment = +e.target.value; const fl = parseFlightLogCSV(S.logRows.rows, S.logRows.hdr); S.klv = S.sidecar = fl.recs; finishLoad(); } }, S.logSegments.map(sg => h('option', { value: sg.i, selected: sg.i === CFG.logSegment }, '#' + (sg.i + 1) + ' · ' + sg.dur.toFixed(0) + ' s')))] : [])),
-    h('div', { class: 'note' }, 'For DJI SRT, DJI djmd, Parrot and flight-log sources. DJI absolute altitude is often unreliable; relative height plus take-off ground is the default. Gimbal yaw is taken as absolute (true) unless ticked.'),
+      h('label', null, 'Gimbal yaw'), sel('gimbalYawMode', [['auto', 'Auto-detect'], ['abs', 'Absolute (true bearing)'], ['rel', 'Relative to airframe']], false, () => { rederiveDrone(); rebuildTrack(); }),
+      ...(S.logSegments && S.logSegments.length > 1 ? [h('label', null, 'Flight-log video segment'), h('select', { onchange: e => { CFG.logSegment = +e.target.value; const fl = parseFlightLogCSV(S.logRows.rows, S.logRows.hdr); S.klv = S.sidecar = fl.recs; finishLoad(); } }, S.logSegments.map(sg => h('option', { value: sg.i, selected: sg.i === (S.logChosen ?? 0) }, '#' + (sg.i + 1) + ' · ' + sg.dur.toFixed(0) + ' s')))] : [])),
+    h('div', { class: 'note' }, 'For DJI SRT, DJI djmd, Parrot and flight-log sources. DJI absolute altitude is often unreliable; relative height plus take-off ground is the default. Gimbal yaw auto-detect: a flight log whose gimbal yaw does not follow the drone heading is treated as relative to the airframe.'),
     h('h3', null, 'Footprint & interpolation'),
     h('div', { class: 'grid2' },
       h('label', null, 'Footprint source'), sel('footprint', [['auto', 'Auto (pose → corners)'], ['computed', 'Sensor model only'], ['metadata', 'KLV corners only']], true),
