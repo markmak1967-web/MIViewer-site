@@ -192,6 +192,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
     <button data-p="pObjects">OBJECTS</button>
     <button data-p="pCal">CAL</button>
     <button data-p="p3d">3D</button>
+    <button data-p="pmos">MOSAIC</button>
     <button data-p="pSearch">SEARCH</button>
     <button data-p="pExport">EXPORT</button>
     <button data-p="pSet">SETTINGS</button>
@@ -202,6 +203,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
   <div class="pane" id="pObjects"></div>
   <div class="pane" id="pCal"></div>
   <div class="pane" id="p3d"></div>
+  <div class="pane" id="pmos"></div>
   <div class="pane" id="pSearch"></div>
   <div class="pane" id="pExport"></div>
   <div class="pane" id="pSet"></div>
@@ -215,7 +217,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.8.0', build: 15 };
+const BUILD = { ver: 'R0.9.0', build: 16 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -1623,6 +1625,7 @@ function finishLoad() {
   if (S.bbox) MapV.fit(S.bbox);
   buildFilePane(); buildMetaPane(); buildSearchPane(); buildExportPane();
   TL.v0 = TL.v1 = 0; thumbsReset(); loadMarks(S.libMarks); loadObjects(); loadCal(); vzReset(); if (typeof SFM !== 'undefined') { SFM.res = null; if ($('#sfm3d')) $('#sfm3d').style.display = 'none'; buildSfmPane(); }
+  if (typeof MOS !== 'undefined') { MOS.res = null; buildMosPane(); }
   seek(S.frames.length ? S.frames[0] : 0);
   dirty();
 }
@@ -1761,6 +1764,7 @@ function updateCurrent(t) {
 const COL = { acc: '#f0a030', track: 'rgba(230,236,240,.85)', fc: 'rgba(240,160,48,.55)', hist: 'rgba(205,211,217,.22)', aoi: '#6cc3ff', meta: 'rgba(255,255,255,.75)', hit: 'rgba(108,195,255,.35)' };
 MapV.overlay = g => {
   const cur = S.cur;
+  if (typeof mosDrawMap === 'function') mosDrawMap(g);
   if (S.ortho && cur) drawOrtho(g, cur);
   const poly = (pts, close) => { g.beginPath(); pts.forEach((p, i) => { const [x, y] = MapV.toScr(p[0], p[1]); i ? g.lineTo(x, y) : g.moveTo(x, y); }); if (close) g.closePath(); };
   if (S.showHist) {
@@ -4393,17 +4397,19 @@ function solve3(A, b) {
 }
 
 /* overlay (burned-in symbology) mask at 1/4 resolution, dilated; null if the scene itself is static */
-async function sfmOverlayMask(i0, i1) {
+async function sfmOverlayMask(i0, i1, loose) {
   // burned-in symbology = strong edges that stay in exactly the same place while the scene moves
-  const N = 8, W = TRK.W; let H = 0; const mg = [];
+  const N = 8; let W = 0, H = 0; const mg = [];
   for (let j = 0; j < N; j++) {
-    const G = await grabRGB(S.frames[Math.round(i0 + (i1 - i0) * j / (N - 1))] + 1e-3); H = TRK.H;
+    const G = await grabRGB(S.frames[Math.round(i0 + (i1 - i0) * j / (N - 1))] + 1e-3); W = TRK.W; H = TRK.H;
     const L = new Float32Array(W * H); for (let i = 0; i < L.length; i++) L[i] = 0.299 * G[0][i] + 0.587 * G[1][i] + 0.114 * G[2][i];
     const g = new Float32Array(W * H); for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) { const k = y * W + x; g[k] = Math.abs(L[k + 1] - L[k - 1]) + Math.abs(L[k + W] - L[k - W]); }
     mg.push(g);
   }
   const n = W * H, st = new Uint8Array(n); let stat = 0, edges = 0;
-  for (let i = 0; i < n; i++) { let m = 0, mn = 1e9; for (const g of mg) { m += g[i]; if (g[i] < mn) mn = g[i]; } m /= N; if (m > 20) edges++; if (m > 20 && mn > 0.45 * m) { st[i] = 1; stat++; } }
+  const border = i => { const x = i % W, y = (i / W) | 0; return x < W * 0.18 || x > W * 0.82 || y < H * 0.16 || y > H * 0.84; }; // where text blocks sit
+  for (let i = 0; i < n; i++) { let m = 0, mn = 1e9, c = 0; for (const g of mg) { m += g[i]; if (g[i] < mn) mn = g[i]; if (g[i] > 25) c++; } m /= N; if (m > 20) edges++; if (m > 20 && mn > 0.45 * m || loose && c >= N - 2 && m > 25 && border(i)) { st[i] = 1; stat++; } }
+  // loose (mosaic): also text whose digits change — an edge at the same place in nearly every frame
   if (stat > edges * 0.6) return null; // scene hardly moving: cannot tell overlay from scene
   const m = new Uint8Array(n), R = 4;
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { if (!st[y * W + x]) continue; for (let j = -R; j <= R; j++) for (let i = -R; i <= R; i++) { const yy = y + j, xx = x + i; if (yy >= 0 && xx >= 0 && yy < H && xx < W) m[yy * W + xx] = 1; } }
@@ -4416,7 +4422,7 @@ async function sfmBuild() {
   if (!S.playable || !S.track) { status('3-D needs decodable video with sensor geometry', 'badc'); return; }
   P.pause();
   const t0 = isNum(S.inT) && isNum(S.outT) && S.outT > S.inT ? S.inT : Math.max(S.frames[0], P.time() - 8), t1 = isNum(S.inT) && isNum(S.outT) && S.outT > S.inT ? S.outT : Math.min(S.frames[S.frames.length - 1], P.time() + 8);
-  const job = SFM.job = { cancel: false, stage: 'tracking', p: 0, t0, t1 };
+  SFM.err = null; const job = SFM.job = { cancel: false, stage: 'tracking', p: 0, t0, t1 };
   buildSfmPane();
   try {
     const v = await trkVideo(); if (!v) throw new Error('could not open the video');
@@ -4531,7 +4537,7 @@ async function sfmBuild() {
     };
     status('Point cloud: ' + out.length + ' points from ' + kfs.length + ' keyframes (' + tcOf(t0) + '–' + tcOf(t1) + '), reprojection ' + fx(SFM.res.rms, 2) + ' px');
     if (SFM.view) sfmViewUpdate();
-  } catch (e) { status('3-D: ' + e.message, e.message === 'cancelled' ? '' : 'badc'); console.warn(e); }
+  } catch (e) { SFM.err = e.message === 'cancelled' ? null : e.message; status('3-D: ' + e.message, e.message === 'cancelled' ? '' : 'badc'); console.warn(e); }
   SFM.job = null; buildSfmPane(); dirty();
 }
 
@@ -4704,7 +4710,8 @@ function buildSfmPane() {
       J ? h('button', { onclick: () => { J.cancel = true; } }, '■ Cancel') : h('button', { style: 'border-color:var(--acc);color:var(--acc)', disabled: !S.playable || !S.track, onclick: sfmBuild }, '▲ Build point cloud'),
       R ? h('button', { onclick: sfmOpenView }, 'Open 3-D view') : ''),
     J ? h('div', { class: 'note' }, ({ 'masking overlay': 'Finding burned-in symbology… ', tracking: 'Tracking features… ', triangulating: 'Triangulating and refining… ', 'dense matching': 'Dense matching… ' }[J.stage] || '') + Math.round(J.p * 100) + '%') : '');
-  if (!R) return;
+  if (!R) { if (SFM.err && !J) p.append(h('div', { class: 'note', style: 'border-color:var(--bad)' }, 'Build failed: ' + SFM.err + '.')); return; }
+  if (R.pts.length < 300) p.append(h('div', { class: 'note', style: 'border-color:var(--acc)' }, (R.pts.length ? 'Only ' + R.pts.length + ' points' : 'No points') + ' in this range. ' + (isNum(R.angMed) && R.angMed < 6 ? 'The viewing angle hardly changes here (median ' + fx(R.angMed, 1) + '° between views), so heights cannot be measured. ' : '') + 'Point clouds need the platform to move past or around the scene while the sensor keeps looking at it (an orbit or a pass). Chase footage that follows a moving vehicle at narrow field of view gives little — the Mosaic tab suits it better.'));
   const hs = R.pts.map(q => q.h).sort((a, b) => a - b);
   p.append(h('table', null,
     [['Points', R.pts.length.toLocaleString() + ' (' + (R.nSparse ?? R.pts.length).toLocaleString() + ' triangulated from ' + R.tracks.toLocaleString() + ' feature tracks + ' + (R.nDense || 0).toLocaleString() + ' dense-matched)'], ['Keyframes', R.keyframes + ' · ' + tcOf(R.t0) + ' → ' + tcOf(R.t1)], ['Reprojection', fx(R.rms, 2) + ' px RMS'], ['Intersection angle', 'median ' + fx(R.angMed, 1) + '°'],
@@ -4715,6 +4722,393 @@ function buildSfmPane() {
       h('button', { onclick: () => sfmExport('ply') }, 'PLY'), h('button', { onclick: () => sfmExport('csv') }, 'CSV'), h('button', { onclick: () => sfmExport('asc') }, 'Grid (ASC)'),
       h('button', { onclick: () => { SFM.res = null; if ($('#sfm3d')) $('#sfm3d').style.display = 'none'; buildSfmPane(); dirty(); } }, 'Clear')),
     h('div', { class: 'dim' }, 'Heights are metres above mean sea level from the sensor model; absolute accuracy follows the metadata (and any calibration lines), relative shape comes from the triangulation.'));
+}
+
+/* =====================================================================
+   MOSAIC — stitch video frames into one pseudo-orthomosaic
+   Each chosen frame is draped on the ground exactly as the live pseudo-ortho does
+   (a mesh of rays from the sensor model, cast into the DEM). Image matching between
+   consecutive frames then refines where each frame lands (a small ground similarity
+   per frame, solved for all frames together with a weak prior to the metadata), so
+   seams line up even where the metadata wanders. Frames are blended with soft seams
+   that favour each frame's centre and its finest resolution; burned-in symbology is
+   kept out where other frames can fill in.
+   Output: map overlay, GeoTIFF (UTM, RGBA), PNG + world file + .prj, frame footprints.
+   ===================================================================== */
+const MOS = { job: null, res: null };
+Object.assign(CFG, { mosMove: 0.1, mosGap: 2, mosStep: 2, mosReg: true, mosSigma: 15, mosBlend: 'soft', mosGsdK: 1, mosMax: 3072, mosHud: true, mosMesh: 16, mosMap: true, mosAlpha: 1, mosMovers: true });
+
+/* ---------- UTM (Krüger series, WGS84; sub-millimetre within the zone) ---------- */
+const UTM = (() => {
+  const a = 6378137, f = 1 / 298.257223563, k0 = 0.9996, n = f / (2 - f), n2 = n * n, n3 = n2 * n;
+  const A = a / (1 + n) * (1 + n2 / 4 + n2 * n2 / 64), q = 2 * Math.sqrt(n) / (1 + n);
+  const al = [n / 2 - 2 * n2 / 3 + 5 * n3 / 16, 13 * n2 / 48 - 3 * n3 / 5, 61 * n3 / 240];
+  const be = [n / 2 - 2 * n2 / 3 + 37 * n3 / 96, n2 / 48 + n3 / 15, 17 * n3 / 480];
+  const de = [2 * n - 2 * n2 / 3 - 2 * n3, 7 * n2 / 3 - 8 * n3 / 5, 56 * n3 / 15];
+  const cm = z => (z - 1) * 6 - 177;
+  return {
+    zone: lon => clamp(Math.floor((lon + 180) / 6) + 1, 1, 60),
+    cm,
+    fwd(lat, lon, z, south) {
+      const phi = lat * D2R, lam = (lon - cm(z)) * D2R, s = Math.sin(phi);
+      const t = Math.sinh(Math.atanh(s) - q * Math.atanh(q * s)), xi = Math.atan2(t, Math.cos(lam)), eta = Math.atanh(Math.sin(lam) / Math.sqrt(1 + t * t));
+      let E = eta, N = xi; for (let j = 1; j <= 3; j++) { E += al[j - 1] * Math.cos(2 * j * xi) * Math.sinh(2 * j * eta); N += al[j - 1] * Math.sin(2 * j * xi) * Math.cosh(2 * j * eta); }
+      return [500000 + k0 * A * E, (south ? 1e7 : 0) + k0 * A * N];
+    },
+    inv(E, N, z, south) {
+      const xi = (N - (south ? 1e7 : 0)) / (k0 * A), eta = (E - 500000) / (k0 * A);
+      let x = xi, e = eta; for (let j = 1; j <= 3; j++) { x -= be[j - 1] * Math.sin(2 * j * xi) * Math.cosh(2 * j * eta); e -= be[j - 1] * Math.cos(2 * j * xi) * Math.sinh(2 * j * eta); }
+      const chi = Math.asin(Math.sin(x) / Math.cosh(e)); let phi = chi; for (let j = 1; j <= 3; j++) phi += de[j - 1] * Math.sin(2 * j * chi);
+      return [phi * R2D, cm(z) + Math.atan2(Math.sinh(e), Math.cos(x)) * R2D];
+    },
+    epsg: (z, south) => (south ? 32700 : 32600) + z,
+    wkt: (z, south) => 'PROJCS["WGS_1984_UTM_Zone_' + z + (south ? 'S' : 'N') + '",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",' + (south ? '10000000.0' : '0.0') + '],PARAMETER["Central_Meridian",' + cm(z).toFixed(1) + '],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]',
+  };
+})();
+
+/* banded SPD solve (upper Cholesky, half-bandwidth b); A[i*(b+1)+d] = H[i][i+d] */
+function bandChol(n, b, A) {
+  const w = b + 1, U = new Float64Array(A);
+  for (let i = 0; i < n; i++) {
+    let s = U[i * w]; for (let k = Math.max(0, i - b); k < i; k++) { const u = U[k * w + (i - k)]; s -= u * u; }
+    if (!(s > 1e-12)) return null; const d = Math.sqrt(s); U[i * w] = d;
+    for (let j = i + 1; j <= Math.min(n - 1, i + b); j++) { let t = U[i * w + (j - i)]; for (let k = Math.max(0, j - b); k < i; k++) t -= U[k * w + (i - k)] * U[k * w + (j - k)]; U[i * w + (j - i)] = t / d; }
+  }
+  return (rhs) => {
+    const y = new Float64Array(n);
+    for (let i = 0; i < n; i++) { let s = rhs[i]; for (let k = Math.max(0, i - b); k < i; k++) s -= U[k * w + (i - k)] * y[k]; y[i] = s / U[i * w]; }
+    for (let i = n - 1; i >= 0; i--) { let s = y[i]; for (let j = i + 1; j <= Math.min(n - 1, i + b); j++) s -= U[i * w + (j - i)] * y[j]; y[i] = s / U[i * w]; }
+    return y;
+  };
+}
+
+/* ---------- build ---------- */
+function mosRange() {
+  const clip = isNum(S.inT) && isNum(S.outT) && S.outT > S.inT;
+  return clip ? [S.inT, S.outT] : [S.frames[0], S.frames[S.frames.length - 1]];
+}
+async function mosBuild() {
+  if (MOS.job) return;
+  if (!S.playable || !S.track) { status('Mosaic needs decodable video with sensor geometry', 'badc'); return; }
+  if (S.tier && S.tier.eff !== 'A' && S.tier.eff !== 'B') { status('Mosaic needs camera pointing or encoder corners (tier A or B)', 'badc'); return; }
+  P.pause();
+  const [t0, t1] = mosRange(), T0 = performance.now();
+  const job = MOS.job = { cancel: false, stage: 'masking overlay', p: 0 };
+  buildMosPane();
+  const tick = async () => { buildMosPane(); await new Promise(r => setTimeout(r)); };
+  try {
+    const v = await trkVideo(); if (!v) throw new Error('could not open the video');
+    const i0 = frameIndex(t0), i1 = frameIndex(t1), step = Math.max(1, CFG.mosStep);
+    const ovl = CFG.mosHud && i1 - i0 > 30 ? await sfmOverlayMask(i0, i1, true) : null; MOS.ovl = ovl;
+    job.stage = 'collecting frames'; await tick();
+    let zone = 0, south = false;
+    const samples = [], NM = CFG.mosMesh;
+    let G = await grabRGB(S.frames[i0] + 1e-3), GP = grayPyr(G), L1 = lumPyr(G);
+    const Wd = TRK.W, Hd = TRK.H, edge = 8;
+    let chain = [], prev = null, chainOK = true, skipped = 0;
+    const pred = (x, y) => { let p = [x, y]; for (const m of chain) p = gmApply(m, p); return p; };
+    const snap = () => new Promise(res => TRK.cv.toBlob(b => res(b), 'image/jpeg', 0.92));
+    const addSample = async (t) => {
+      const st = S.track.at(t), Pj = st && makeProjector(st);
+      if (!Pj) { skipped++; return false; }
+      const M = Math.max(2, Math.round(NM * Hd / Wd)), nodes = [];
+      for (let j = 0; j <= M; j++) for (let i = 0; i <= NM; i++) {
+        const gp = Pj.toGround(-1 + 2 * i / NM, -1 + 2 * j / M);
+        if (!gp || gp.horizon || !isNum(gp.lat)) { nodes.push(null); continue; }
+        if (!zone) { zone = UTM.zone(gp.lon); south = gp.lat < 0; }
+        nodes.push(UTM.fwd(gp.lat, gp.lon, zone, south));
+      }
+      // per-cell ground resolution; cells far beyond the frame's typical resolution (grazing, near-horizon) are dropped
+      const cg = [];
+      for (let j = 0; j < M; j++) for (let i = 0; i < NM; i++) {
+        const a = nodes[j * (NM + 1) + i], d = nodes[(j + 1) * (NM + 1) + i + 1], b = nodes[j * (NM + 1) + i + 1], c = nodes[(j + 1) * (NM + 1) + i];
+        cg.push(a && b && c && d ? Math.sqrt(Math.abs(((b[0] - c[0]) * (d[1] - a[1]) - (d[0] - a[0]) * (b[1] - c[1])) / 2) / ((Wd / NM) * (Hd / M))) : null);
+      }
+      const ok = cg.filter(x => x).sort((p, q) => p - q); if (ok.length < 4) { skipped++; return false; }
+      const gsd = ok[ok.length >> 1];
+      const cx = nodes[(M >> 1) * (NM + 1) + (NM >> 1)] || (() => { const v = nodes.filter(Boolean); return [v.reduce((s, p) => s + p[0], 0) / v.length, v.reduce((s, p) => s + p[1], 0) / v.length]; })();
+      const s = { t, nodes, N: NM, M, cg, gsd, c: cx, L: Math.max(1, gsd * Math.hypot(Wd, Hd) / 2), W: Wd, H: Hd, blob: await snap(), pairs: [] };
+      // image correspondences with the previous chosen frame (LK from the composed camera motion, forward–backward checked, RANSAC)
+      if (prev && chainOK) {
+        const pts = goodFeatures(prev.GP[0], [10, 10, Wd - 20, Hd - 20], ovl ? (x, y) => !ovl.m[((y / ovl.f) | 0) * ovl.w + ((x / ovl.f) | 0)] : () => true, 220, Math.max(10, Wd / 40), 2, [], 0.03);
+        const P2 = [];
+        for (const [x, y] of pts) {
+          const [px, py] = pred(x, y); if (px < edge || py < edge || px > Wd - edge || py > Hd - edge) continue;
+          const f = lkPoint(prev.GP, GP, x, y, px - x, py - y, 7); if (!f) continue;
+          const r = lkPoint(GP, prev.GP, f[0], f[1], x - f[0], y - f[1], 7); if (!r || Math.hypot(r[0] - x, r[1] - y) > 1.5) continue;
+          if (Math.hypot(f[0] - px, f[1] - py) > Math.max(30, Wd / 15)) continue;
+          P2.push({ p: [x, y], q: f });
+        }
+        const rs = P2.length >= 12 ? ransacSim(P2, Math.max(2.5, Wd / 250), 120) : null;
+        if (rs && rs.n >= 12) s.pairs = rs.inl.map(e => [(e.p[0] + 0.5) / Wd * 2 - 1, (e.p[1] + 0.5) / Hd * 2 - 1, (e.q[0] + 0.5) / Wd * 2 - 1, (e.q[1] + 0.5) / Hd * 2 - 1]);
+      }
+      samples.push(s); prev = { GP, s }; chain = []; chainOK = true;
+      return true;
+    };
+    await addSample(S.frames[i0]);
+    let lastT = S.frames[i0], n = 0;
+    for (let i = i0 + step; i <= i1; i += step) {
+      if (job.cancel) throw new Error('cancelled');
+      const t = S.frames[i], G2 = await grabRGB(t + 1e-3), GP2 = grayPyr(G2), L2 = lumPyr(G2);
+      const gc = globalMotion(L1, L2, null); L1 = L2;
+      const gm = bgFlowMotion(GP, GP2, gc.weak ? null : gc, null, ovl) || (gc.weak ? null : gc);
+      if (!gm) chainOK = false; chain.push(gm || { a: 1, b: 0, tx: 0, ty: 0 });
+      G = G2; GP = GP2;
+      // a new frame once the view has moved, turned or zoomed enough (or the chain broke, or too long since the last)
+      const c0 = [Wd / 2, Hd / 2], c1 = pred(c0[0], c0[1]), q1 = pred(c0[0] + 100, c0[1]);
+      const mv = Math.hypot(c1[0] - c0[0], c1[1] - c0[1]) / Wd, sc = Math.abs(Math.log(Math.hypot(q1[0] - c1[0], q1[1] - c1[1]) / 100)), rot = Math.abs(Math.atan2(q1[1] - c1[1], q1[0] - c1[0])) * R2D;
+      if (mv > CFG.mosMove || sc > 0.12 || rot > 8 || t - lastT > CFG.mosGap || !chainOK || i + step > i1) { if (await addSample(t)) lastT = t; }
+      job.p = (i - i0) / Math.max(1, i1 - i0); job.n = samples.length; if (++n % 6 === 0) await tick();
+    }
+    if (samples.length < 1) throw new Error('no frames with ground geometry in this range');
+    for (const s of samples) s.GP = null;
+    if (prev) prev.GP = null;
+
+    // ---- register: per-frame ground similarity [α, β, tx, ty] (metres at radius L) ----
+    job.stage = 'registering'; job.p = 0; await tick();
+    const K = samples.length, nodeAt = (s, u, v) => {
+      const fi = (u + 1) / 2 * s.N, fj = (v + 1) / 2 * s.M, i = clamp(Math.floor(fi), 0, s.N - 1), j = clamp(Math.floor(fj), 0, s.M - 1), a = fi - i, b = fj - j;
+      const A = s.nodes[j * (s.N + 1) + i], B = s.nodes[j * (s.N + 1) + i + 1], C = s.nodes[(j + 1) * (s.N + 1) + i], D = s.nodes[(j + 1) * (s.N + 1) + i + 1];
+      if (!A || !B || !C || !D) return null;
+      return [(A[0] * (1 - a) + B[0] * a) * (1 - b) + (C[0] * (1 - a) + D[0] * a) * b, (A[1] * (1 - a) + B[1] * a) * (1 - b) + (C[1] * (1 - a) + D[1] * a) * b];
+    };
+    const obs = []; // {k, P, Q, sig}
+    for (let k = 1; k < K; k++) for (const [u1, v1, u2, v2] of samples[k].pairs) {
+      const P1 = nodeAt(samples[k - 1], u1, v1), Q1 = nodeAt(samples[k], u2, v2);
+      if (P1 && Q1) obs.push({ k: k - 1, P: P1, Q: Q1, sig: Math.max(0.05, Math.max(samples[k - 1].gsd, samples[k].gsd)) });
+    }
+    const corr = samples.map(() => [0, 0, 0, 0]);
+    const D = (s, p, X) => { const dx = (X[0] - s.c[0]) / s.L, dy = (X[1] - s.c[1]) / s.L; return [p[0] * dx - p[1] * dy + p[2], p[0] * dy + p[1] * dx + p[3]]; };
+    const resid = o => { const a = samples[o.k], b = samples[o.k + 1], dP = D(a, corr[o.k], o.P), dQ = D(b, corr[o.k + 1], o.Q); return [o.P[0] + dP[0] - o.Q[0] - dQ[0], o.P[1] + dP[1] - o.Q[1] - dQ[1]]; };
+    const rmsOf = () => { if (!obs.length) return { m: 0, px: 0 }; let sm = 0, sp = 0; const e = obs.map(o => { const r = resid(o), m = Math.hypot(r[0], r[1]); return [m, m / o.sig]; }); e.sort((x, y) => x[0] - y[0]); for (const [m, p] of e) { sm += m * m; sp += p * p; } return { m: Math.sqrt(sm / e.length), px: Math.sqrt(sp / e.length), med: e[e.length >> 1][0], medPx: e.slice().sort((x, y) => x[1] - y[1])[e.length >> 1][1] }; };
+    const before = rmsOf();
+    const pairsOK = samples.filter(s => s.pairs.length).length;
+    if (CFG.mosReg && obs.length) {
+      const n4 = 4 * K, b = 7, w = b + 1, wP = 1 / (CFG.mosSigma * CFG.mosSigma);
+      // graduated Tukey weights: the window starts wide enough to pull grossly misplaced frames in, then narrows to ~2 px so
+      // tie points on things above the elevation model (roofs, trees: parallax a flat mosaic cannot honour) drop out
+      const m0 = obs.map(o => { const r = resid(o); return Math.hypot(r[0], r[1]); }).sort((a, b) => a - b), c0 = 3 * m0[m0.length >> 1];
+      const NIT = 10;
+      for (let it = 0; it < NIT; it++) {
+        const A = new Float64Array(n4 * w), g = new Float64Array(n4);
+        for (let k = 0; k < K; k++) for (let q = 0; q < 4; q++) A[(4 * k + q) * w] += wP; // prior: stay with the metadata (weakly)
+        for (const o of obs) {
+          const a = samples[o.k], c = samples[o.k + 1], r0 = resid(o), m = Math.hypot(r0[0], r0[1]), cc = Math.max(2 * o.sig, c0 * Math.pow(0.6, it));
+          if (m >= cc) continue; const tw = 1 - (m / cc) ** 2, wt = tw * tw / (o.sig * o.sig);
+          const px = (o.P[0] - a.c[0]) / a.L, py = (o.P[1] - a.c[1]) / a.L, qx = (o.Q[0] - c.c[0]) / c.L, qy = (o.Q[1] - c.c[1]) / c.L;
+          // residual r = r_lin(p) : x-row J = [px,-py,1,0 | -qx,qy,-1,0], y-row J = [py,px,0,1 | -qy,-qx,0,-1]
+          const Jx = [px, -py, 1, 0, -qx, qy, -1, 0], Jy = [py, px, 0, 1, -qy, -qx, 0, -1];
+          // current residual at zero increment: r0 (we solve for the full parameter vector, so remove the current-parameter part)
+          const p8 = [...corr[o.k], ...corr[o.k + 1]];
+          let ex = r0[0], ey = r0[1]; for (let q = 0; q < 8; q++) { ex -= Jx[q] * p8[q]; ey -= Jy[q] * p8[q]; }
+          const base = 4 * o.k;
+          for (let r = 0; r < 8; r++) {
+            g[base + r] -= wt * (Jx[r] * ex + Jy[r] * ey);
+            for (let c2 = r; c2 < 8; c2++) A[(base + r) * w + (c2 - r)] += wt * (Jx[r] * Jx[c2] + Jy[r] * Jy[c2]);
+          }
+        }
+        // the mean correction over all frames is held at zero (Woodbury on the banded factor): the mosaic as a whole
+        // keeps the metadata's position, scale and orientation — otherwise shrinking every frame would "improve" the fit
+        const sol = bandChol(n4, b, A); if (!sol) break;
+        const y0 = sol(g), Z = [0, 1, 2, 3].map(q => { const a = new Float64Array(n4); for (let k = 0; k < K; k++) a[4 * k + q] = 1 / K; return sol(a); });
+        const Ut = v => [0, 1, 2, 3].map(q => { let s = 0; for (let k = 0; k < K; k++) s += v[4 * k + q] / K; return s; });
+        const Mw = [0, 1, 2, 3].map(r => { const u = Ut(Z[r]); return u.map((x, c) => x + (r === c ? 1e-8 : 0)); }); // W^-1 + U^T Z, W = 1e8
+        const cf = solveLin(Mw.map((row, r) => [0, 1, 2, 3].map(c => Mw[c][r])), Ut(y0)); if (!cf) break;
+        const x = y0.map((v, i) => v - Z.reduce((s, z, q) => s + z[i] * cf[q], 0));
+        let dmax = 0; for (let k = 0; k < K; k++) for (let q = 0; q < 4; q++) { dmax = Math.max(dmax, Math.abs(x[4 * k + q] - corr[k][q])); corr[k][q] = x[4 * k + q]; }
+        job.p = (it + 1) / NIT; await tick();
+        if (dmax < 0.01 && c0 * Math.pow(0.6, it) < 2 * obs[0].sig) break;
+      }
+    }
+    const after = rmsOf();
+    if (window.MOSDBG) MOS.dbg = { obs: obs.map(o => [o.k, o.P, o.Q, o.sig]), c: samples.map(s => [s.c, s.L, s.gsd]), corr };
+    const corrNodes = s => { const p = corr[samples.indexOf(s)]; return s.nodes.map(X => { if (!X) return null; const d = D(s, p, X); return [X[0] + d[0], X[1] + d[1]]; }); };
+
+    // ---- output grid ----
+    job.stage = 'rendering'; job.p = 0; await tick();
+    const gsds = samples.map(s => s.gsd).sort((a, b) => a - b);
+    let gOut = gsds[gsds.length >> 1] * CFG.mosGsdK;
+    const keep = samples.map(s => s.cg.map(x => x && x < 5 * s.gsd));
+    let b0 = [Infinity, Infinity, -Infinity, -Infinity];
+    const cn = samples.map(s => corrNodes(s));
+    samples.forEach((s, k) => { for (let j = 0; j < s.M; j++) for (let i = 0; i < s.N; i++) { if (!keep[k][j * s.N + i]) continue; for (const id of [j * (s.N + 1) + i, j * (s.N + 1) + i + 1, (j + 1) * (s.N + 1) + i, (j + 1) * (s.N + 1) + i + 1]) { const X = cn[k][id]; b0[0] = Math.min(b0[0], X[0]); b0[1] = Math.min(b0[1], X[1]); b0[2] = Math.max(b0[2], X[0]); b0[3] = Math.max(b0[3], X[1]); } } });
+    if (!(b0[2] > b0[0])) throw new Error('no ground coverage');
+    const span = Math.max(b0[2] - b0[0], b0[3] - b0[1]); let limited = false;
+    if (span / gOut > CFG.mosMax) { gOut = span / CFG.mosMax; limited = true; }
+    gOut = +gOut.toPrecision(3);
+    const E0 = Math.floor(b0[0] / gOut) * gOut, N0 = Math.ceil(b0[3] / gOut) * gOut, Wo = Math.ceil((b0[2] - E0) / gOut) + 1, Ho = Math.ceil((N0 - b0[1]) / gOut) + 1;
+    let acc = new Float32Array(Wo * Ho * 3), wac = new Float32Array(Wo * Ho), ref = null;
+    const fc = document.createElement('canvas'), fx2 = fc.getContext('2d', { willReadFrequently: true });
+    // moving vehicles: a first pass averages every frame; the second down-weights pixels that disagree with that consensus,
+    // so a vehicle seen at a spot in one frame gives way to the road seen there in the others
+    const NP = CFG.mosMovers && K > 2 ? 3 : 1, cnt = window.MOSDBG ? (MOS.cnt = new Uint8Array(Wo * Ho)) : null;
+    for (let pass = 0; pass < NP; pass++) {
+    const last = pass === NP - 1, pw = pass === 0 || CFG.mosBlend === 'average' ? 1 : last ? 4 : 2, best = last && CFG.mosBlend === 'best';
+    if (pass) { ref = new Uint8ClampedArray(Wo * Ho * 3); for (let o = 0; o < Wo * Ho; o++) if (wac[o] > 0) for (let q = 0; q < 3; q++) ref[o * 3 + q] = acc[o * 3 + q] / wac[o]; acc = new Float32Array(Wo * Ho * 3); wac = new Float32Array(Wo * Ho); }
+    for (let k = 0; k < K; k++) {
+      if (job.cancel) throw new Error('cancelled');
+      const s = samples[k], bmp = await createImageBitmap(s.blob); fc.width = s.W; fc.height = s.H; fx2.drawImage(bmp, 0, 0); bmp.close && bmp.close();
+      const src = fx2.getImageData(0, 0, s.W, s.H).data, SW = s.W, SH = s.H, half = Math.min(SW, SH) / 2;
+      const O = cn[k].map(X => X && [(X[0] - E0) / gOut, (N0 - X[1]) / gOut]);
+      const tri3 = (ia, ib, ic, sa, sb, sc, rf) => {
+        const a = O[ia], b2 = O[ib], c = O[ic];
+        // affine output px -> source px
+        const det = (b2[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b2[1] - a[1]); if (Math.abs(det) < 1e-9) return;
+        const x0 = Math.max(0, Math.floor(Math.min(a[0], b2[0], c[0]))), x1 = Math.min(Wo - 1, Math.ceil(Math.max(a[0], b2[0], c[0]))), y0 = Math.max(0, Math.floor(Math.min(a[1], b2[1], c[1]))), y1 = Math.min(Ho - 1, Math.ceil(Math.max(a[1], b2[1], c[1])));
+        for (let y = y0; y <= y1; y++) {
+          const py = y + 0.5;
+          for (let x = x0; x <= x1; x++) {
+            const px = x + 0.5;
+            const l1 = ((px - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (py - a[1])) / det, l2 = ((b2[0] - a[0]) * (py - a[1]) - (px - a[0]) * (b2[1] - a[1])) / det, l0 = 1 - l1 - l2;
+            if (l0 < -1e-6 || l1 < -1e-6 || l2 < -1e-6) continue;
+            const sx = l0 * sa[0] + l1 * sb[0] + l2 * sc[0], sy = l0 * sa[1] + l1 * sb[1] + l2 * sc[1];
+            if (sx < 0 || sy < 0 || sx > SW || sy > SH) continue;
+            let e = Math.min(sx, SW - sx, sy, SH - sy) / half; e = Math.max(1e-3, Math.min(1, e));
+            if (ovl && ovl.m[(Math.min(SH - 1, sy | 0) / ovl.f | 0) * ovl.w + (Math.min(SW - 1, sx | 0) / ovl.f | 0)]) { if (e < 0.25) continue; e *= 1e-3; } // symbology: never near the frame edge (text blocks); elsewhere only if nothing else covers it (e.g. a crosshair on the aim point)
+            const o = y * Wo + x;
+            // bilinear sample
+            const fxp = Math.min(SW - 1.001, Math.max(0, sx - 0.5)), fyp = Math.min(SH - 1.001, Math.max(0, sy - 0.5)), ix = fxp | 0, iy = fyp | 0, ax = fxp - ix, ay = fyp - iy;
+            const i00 = (iy * SW + ix) * 4, i10 = i00 + 4, i01 = i00 + SW * 4, i11 = i01 + 4;
+            const w00 = (1 - ax) * (1 - ay), w10 = ax * (1 - ay), w01 = (1 - ax) * ay, w11 = ax * ay;
+            const r = src[i00] * w00 + src[i10] * w10 + src[i01] * w01 + src[i11] * w11, gg = src[i00 + 1] * w00 + src[i10 + 1] * w10 + src[i01 + 1] * w01 + src[i11 + 1] * w11, bb = src[i00 + 2] * w00 + src[i10 + 2] * w10 + src[i01 + 2] * w01 + src[i11 + 2] * w11;
+            let wv = best ? e * rf : Math.pow(e * rf, pw); if (cnt && !pass) cnt[o]++;
+            if (ref) { const dr = r - ref[o * 3], dg = gg - ref[o * 3 + 1], db = bb - ref[o * 3 + 2], d2 = (dr * dr + dg * dg + db * db) / 3; wv *= 1 / (1 + d2 / 400) ** 2; }
+            if (best) { if (wv <= wac[o]) continue; acc[o * 3] = r; acc[o * 3 + 1] = gg; acc[o * 3 + 2] = bb; wac[o] = wv; }
+            else { acc[o * 3] += wv * r; acc[o * 3 + 1] += wv * gg; acc[o * 3 + 2] += wv * bb; wac[o] += wv; }
+          }
+        }
+      };
+      for (let j = 0; j < s.M; j++) for (let i = 0; i < s.N; i++) {
+        if (!keep[k][j * s.N + i]) continue;
+        const a = j * (s.N + 1) + i, b2 = a + 1, c = a + s.N + 1, d = c + 1;
+        if (!O[a] || !O[b2] || !O[c] || !O[d]) continue;
+        const sxf = q => q / s.N * SW, syf = q => q / s.M * SH, A = [sxf(i), syf(j)], B = [sxf(i + 1), syf(j)], C = [sxf(i), syf(j + 1)], Dd = [sxf(i + 1), syf(j + 1)];
+        const rf = Math.min(1, gOut / s.cg[j * s.N + i]);
+        tri3(a, b2, d, A, B, Dd, rf); tri3(a, d, c, A, Dd, C, rf);
+      }
+      job.p = (pass + (k + 1) / K) / NP; if (k % 3 === 2) await tick();
+    }
+    }
+    const best = CFG.mosBlend === 'best';
+    const cv = document.createElement('canvas'); cv.width = Wo; cv.height = Ho;
+    const cx = cv.getContext('2d'), im = cx.createImageData(Wo, Ho), D8 = im.data; let cov = 0;
+    for (let o = 0; o < Wo * Ho; o++) { const w = wac[o]; if (!(w > 0)) continue; cov++; const f = best ? 1 : 1 / w; D8[o * 4] = acc[o * 3] * f; D8[o * 4 + 1] = acc[o * 3 + 1] * f; D8[o * 4 + 2] = acc[o * 3 + 2] * f; D8[o * 4 + 3] = 255; }
+    cx.putImageData(im, 0, 0);
+    // smaller copy for drawing on the map
+    const ds = Math.min(1, 2048 / Math.max(Wo, Ho)), dcv = document.createElement('canvas'); dcv.width = Math.max(1, Math.round(Wo * ds)); dcv.height = Math.max(1, Math.round(Ho * ds)); dcv.getContext('2d').drawImage(cv, 0, 0, dcv.width, dcv.height);
+    const shifts = corr.map(p => Math.hypot(p[2], p[3])).sort((a, b) => a - b);
+    const frames = samples.map((s, k) => {
+      const ring = [], Nn = s.N, M = s.M, cnk = cn[k], push = id => { const X = cnk[id]; if (X) { const [la, lo] = UTM.inv(X[0], X[1], zone, south); ring.push([lo, la]); } };
+      for (let i = 0; i <= Nn; i++) push(i); for (let j = 1; j <= M; j++) push(j * (Nn + 1) + Nn); for (let i = Nn - 1; i >= 0; i--) push(M * (Nn + 1) + i); for (let j = M - 1; j >= 1; j--) push(j * (Nn + 1));
+      const p = corr[k]; return { t: s.t, ring, gsd: s.gsd, matches: s.pairs.length, shift: Math.hypot(p[2], p[3]), scale: p[0] / s.L * 100, rot: Math.atan2(p[1], s.L + p[0]) * R2D };
+    });
+    MOS.res = { cv, dcv, zone, south, E0, N0, g: gOut, Wo, Ho, t0, t1, frames, K, pairsOK, nObs: obs.length, before, after, reg: CFG.mosReg && obs.length > 0, limited, cover: cov * gOut * gOut, shiftMed: shifts[shifts.length >> 1], shiftMax: shifts[shifts.length - 1], hud: !!ovl, skipped, blend: CFG.mosBlend, secs: (performance.now() - T0) / 1000 };
+    MOS.job = null; buildMosPane(); dirty();
+    status('Mosaic: ' + K + ' frames → ' + Wo + '×' + Ho + ' px at ' + fx(gOut, 2) + ' m');
+  } catch (e) {
+    MOS.job = null; buildMosPane(); status('Mosaic: ' + (e.message || e), e.message === 'cancelled' ? '' : 'badc'); if (e.message !== 'cancelled') console.error(e);
+  }
+}
+
+/* ---------- map overlay ---------- */
+function mosDrawMap(g) {
+  const R = MOS.res; if (!R || !CFG.mosMap) return;
+  const C = 12, sw = R.dcv.width, sh = R.dcv.height, pt = (i, j) => { const E = R.E0 + i / C * R.Wo * R.g, N = R.N0 - j / C * R.Ho * R.g, [la, lo] = UTM.inv(E, N, R.zone, R.south); return MapV.toScr(la, lo); };
+  const P = []; for (let j = 0; j <= C; j++) for (let i = 0; i <= C; i++) P.push(pt(i, j));
+  g.save(); g.globalAlpha = CFG.mosAlpha;
+  for (let j = 0; j < C; j++) for (let i = 0; i < C; i++) {
+    const a = j * (C + 1) + i, b = a + 1, c = a + C + 1, d = c + 1, sx = q => q / C * sw, sy = q => q / C * sh;
+    const A = [sx(i), sy(j)], B = [sx(i + 1), sy(j)], Cc = [sx(i), sy(j + 1)], D = [sx(i + 1), sy(j + 1)];
+    tri(g, R.dcv, A, B, D, P[a], P[b], P[d]); tri(g, R.dcv, A, D, Cc, P[a], P[d], P[c]);
+  }
+  g.restore();
+}
+function mosFit() {
+  const R = MOS.res; if (!R) return; const ll = [[R.E0, R.N0], [R.E0 + R.Wo * R.g, R.N0 - R.Ho * R.g]].map(([E, N]) => UTM.inv(E, N, R.zone, R.south));
+  MapV.fit([Math.min(ll[0][0], ll[1][0]), Math.min(ll[0][1], ll[1][1]), Math.max(ll[0][0], ll[1][0]), Math.max(ll[0][1], ll[1][1])]);
+}
+
+/* ---------- exports ---------- */
+function tiffWrite(W, H, rgba, geo, desc) {
+  const rps = Math.max(1, Math.min(H, Math.floor(262144 / (W * 4)))), ns = Math.ceil(H / rps);
+  const cnt = []; for (let s = 0; s < ns; s++) cnt.push(Math.min(rps, H - s * rps) * W * 4);
+  const ascii = Array.from(desc || '').map(c => { const k = c.charCodeAt(0); return k < 128 ? k : 63; }); ascii.push(0);
+  const E = [[256, 4, [W]], [257, 4, [H]], [258, 3, [8, 8, 8, 8]], [259, 3, [1]], [262, 3, [2]], [270, 2, ascii], [273, 4, new Array(ns).fill(0)], [277, 3, [4]], [278, 4, [rps]], [279, 4, cnt], [284, 3, [1]], [338, 3, [2]],
+    [33550, 12, [geo.g, geo.g, 0]], [33922, 12, [0, 0, 0, geo.E0, geo.N0, 0]], [34735, 3, [1, 1, 0, 4, 1024, 0, 1, 1, 1025, 0, 1, 1, 3072, 0, 1, geo.epsg, 3076, 0, 1, 9001]]];
+  const sz = { 2: 1, 3: 2, 4: 4, 12: 8 };
+  let off = 8 + 2 + E.length * 12 + 4; const ext = [];
+  for (const e of E) { const n = e[2].length * sz[e[1]]; if (n > 4) { off = (off + 7) & ~7; ext.push([e, off]); e.off = off; off += n; } }
+  off = (off + 7) & ~7; const img0 = off, total = img0 + W * H * 4;
+  for (let s = 0, o = img0; s < ns; s++) { E[6][2][s] = o; o += cnt[s]; }
+  const buf = new ArrayBuffer(total), dv = new DataView(buf), u8 = new Uint8Array(buf);
+  u8[0] = 0x49; u8[1] = 0x49; dv.setUint16(2, 42, true); dv.setUint32(4, 8, true); dv.setUint16(8, E.length, true);
+  const put = (o, t, vals) => { for (let i = 0; i < vals.length; i++) { const v = vals[i]; if (t === 2) dv.setUint8(o + i, v); else if (t === 3) dv.setUint16(o + i * 2, v, true); else if (t === 4) dv.setUint32(o + i * 4, v, true); else dv.setFloat64(o + i * 8, v, true); } };
+  E.forEach((e, i) => { const p = 10 + i * 12; dv.setUint16(p, e[0], true); dv.setUint16(p + 2, e[1], true); dv.setUint32(p + 4, e[2].length, true); if (e.off) dv.setUint32(p + 8, e.off, true); else put(p + 8, e[1], e[2]); });
+  dv.setUint32(10 + E.length * 12, 0, true);
+  for (const [e, o] of ext) put(o, e[1], e[2]);
+  u8.set(rgba, img0);
+  return buf;
+}
+function mosExport(kind) {
+  const R = MOS.res; if (!R) return; const base = (S.name || 'misb').replace(/\.[^.]+$/, '') + '_mosaic';
+  const desc = 'MIViewer pseudo-orthomosaic of ' + (S.name || '') + ' ' + tcOf(R.t0) + '-' + tcOf(R.t1) + '; ' + R.K + ' frames; GSD ' + R.g + ' m; ' + (R.reg ? 'frames registered by image matching' : 'metadata placement only') + '; not a rigorous orthorectification (no lens model or occlusion handling)';
+  if (kind === 'tif') {
+    const rgba = R.cv.getContext('2d').getImageData(0, 0, R.Wo, R.Ho).data;
+    return download(base + '.tif', new Blob([tiffWrite(R.Wo, R.Ho, rgba, { g: R.g, E0: R.E0, N0: R.N0, epsg: UTM.epsg(R.zone, R.south) }, desc)], { type: 'image/tiff' }));
+  }
+  if (kind === 'png') {
+    R.cv.toBlob(b => {
+      download(base + '.png', b);
+      setTimeout(() => download(base + '.pgw', [R.g, 0, 0, -R.g, R.E0 + R.g / 2, R.N0 - R.g / 2].map(v => v.toFixed(6)).join('\r\n') + '\r\n', 'text/plain'), 300);
+      setTimeout(() => download(base + '.prj', UTM.wkt(R.zone, R.south), 'text/plain'), 600);
+    }, 'image/png');
+    return;
+  }
+  if (kind === 'geojson') {
+    const fc = { type: 'FeatureCollection', name: base + '_frames', description: desc, features: R.frames.filter(f => f.ring.length > 2).map(f => ({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...f.ring, f.ring[0]]] }, properties: { t: +f.t.toFixed(3), timecode: tcOf(f.t), gsd_m: +f.gsd.toFixed(3), matches: f.matches, shift_m: +f.shift.toFixed(2), scale_pct: +f.scale.toFixed(3), rot_deg: +f.rot.toFixed(3) } })) };
+    return download(base + '_frames.geojson', JSON.stringify(fc), 'application/geo+json');
+  }
+}
+
+/* ---------- pane ---------- */
+function buildMosPane() {
+  const p = $('#pmos'); if (!p) return; p.innerHTML = '';
+  const J = MOS.job, R = MOS.res, clip = isNum(S.inT) && isNum(S.outT) && S.outT > S.inT;
+  const num = (k, stp, mn, def) => h('input', { type: 'number', step: stp, min: mn, value: CFG[k], onchange: e => { CFG[k] = +e.target.value || def; } });
+  p.append(h('h3', null, 'Mosaic (stitched pseudo-ortho)'),
+    h('div', { class: 'note' }, 'Drapes frames on the ground with the same sensor model and elevation as the live pseudo-ortho, then matches each frame to the one before it and nudges where frames land so the seams line up (a small shift, scale and rotation per frame, solved over all frames at once, kept close to the metadata). Frames are blended with soft seams that favour each frame\'s centre and finest detail, and things that are only in one frame at a spot (moving vehicles) give way to what the other frames show there. Burned-in symbology is left out where other frames cover the same ground.'),
+    h('div', { class: 'muted' }, 'Range: ' + (clip ? 'clip ' + tcOf(S.inT) + ' → ' + tcOf(S.outT) : 'whole video (set In/Out on the timeline to choose a range)')),
+    h('div', { class: 'grid2' },
+      h('label', null, 'New frame when view moves (fraction of width)'), num('mosMove', 0.05, 0.02, 0.1),
+      h('label', null, 'At least one frame every s'), num('mosGap', 0.5, 0.2, 2),
+      h('label', null, 'Register frames by image matching'), h('input', { type: 'checkbox', checked: CFG.mosReg, onchange: e => { CFG.mosReg = e.target.checked; } }),
+      h('label', null, 'Metadata trusted to ± m'), num('mosSigma', 1, 0.5, 15),
+      h('label', null, 'Blend'), h('select', { onchange: e => { CFG.mosBlend = e.target.value; } }, [['soft', 'soft seams (centre-weighted)'], ['best', 'sharpest frame only'], ['average', 'average (smoothest, ghosts movers)']].map(([v, l]) => h('option', { value: v, selected: CFG.mosBlend === v }, l))),
+      h('label', null, 'Output resolution × frame GSD'), num('mosGsdK', 0.25, 0.25, 1),
+      h('label', null, 'Max output size px'), num('mosMax', 256, 256, 3072),
+      h('label', null, 'Suppress moving vehicles'), h('input', { type: 'checkbox', checked: CFG.mosMovers, onchange: e => { CFG.mosMovers = e.target.checked; } }),
+      h('label', null, 'Leave out burned-in symbology'), h('input', { type: 'checkbox', checked: CFG.mosHud, onchange: e => { CFG.mosHud = e.target.checked; } })),
+    h('div', { class: 'btns' },
+      J ? h('button', { onclick: () => { J.cancel = true; } }, '■ Cancel') : h('button', { style: 'border-color:var(--acc);color:var(--acc)', disabled: !S.playable || !S.track, onclick: mosBuild }, '▦ Build mosaic'),
+      R ? h('button', { onclick: mosFit }, 'Zoom map to mosaic') : ''),
+    J ? h('div', { class: 'note' }, ({ 'masking overlay': 'Finding burned-in symbology… ', 'collecting frames': 'Choosing and matching frames… ' + (J.n || 0) + ' frames · ', registering: 'Registering frames… ', rendering: 'Stitching… ' }[J.stage] || '') + Math.round(J.p * 100) + '%') : '');
+  if (!R) return;
+  const rows = [['Frames', R.K + ' · ' + tcOf(R.t0) + ' → ' + tcOf(R.t1) + (R.skipped ? ' (' + R.skipped + ' without ground geometry skipped)' : '')],
+    ['Output', R.Wo.toLocaleString() + ' × ' + R.Ho.toLocaleString() + ' px at ' + fx(R.g, 2) + ' m' + (R.limited ? ' (coarsened to fit the size limit)' : '') + ' · UTM ' + R.zone + (R.south ? 'S' : 'N') + ' (EPSG:' + UTM.epsg(R.zone, R.south) + ')'],
+    ['Covered', R.cover > 1e6 ? fx(R.cover / 1e6, 2) + ' km²' : fx(R.cover / 1e4, 1) + ' ha'],
+    ['Matching', R.pairsOK + ' of ' + Math.max(0, R.K - 1) + ' frame pairs matched · ' + R.nObs.toLocaleString() + ' tie points'],
+    ['Seam misfit', R.nObs ? 'metadata only ' + fx(R.before.med, 2) + ' m median (' + fx(R.before.medPx, 1) + ' px)' + (R.reg ? ' → registered ' + fx(R.after.med, 2) + ' m (' + fx(R.after.medPx, 1) + ' px)' : '') : 'no tie points'],
+    ['Frame corrections', R.reg ? 'shift median ' + fx(R.shiftMed, 1) + ' m, max ' + fx(R.shiftMax, 1) + ' m' : 'none (metadata placement)'],
+    ['Symbology', R.hud ? 'detected and left out where covered' : 'none detected / off'],
+    ['Built in', fx(R.secs, 1) + ' s']];
+  p.append(h('table', null, rows.map(([k, v]) => h('tr', null, h('td', { class: 'k' }, k), h('td', null, v)))),
+    h('label', { class: 'row', style: 'gap:6px;margin:6px 0' }, h('input', { type: 'checkbox', checked: CFG.mosMap, onchange: e => { CFG.mosMap = e.target.checked; dirty(); } }), 'Show on map', h('span', { class: 'dim' }, 'opacity'),
+      h('input', { type: 'range', min: 0.1, max: 1, step: 0.05, value: CFG.mosAlpha, oninput: e => { CFG.mosAlpha = +e.target.value; dirty(); } })),
+    h('div', { class: 'btns' }, h('button', { onclick: () => mosExport('tif'), title: 'Uncompressed RGBA GeoTIFF in UTM — opens directly in ArcGIS Pro, QGIS and GDAL' }, 'GeoTIFF'),
+      h('button', { onclick: () => mosExport('png'), title: 'PNG with world file (.pgw) and projection (.prj)' }, 'PNG + world file'),
+      h('button', { onclick: () => mosExport('geojson'), title: 'Each frame\'s ground footprint with time, resolution, tie points and the correction applied' }, 'Frame footprints'),
+      h('button', { onclick: () => { MOS.res = null; buildMosPane(); dirty(); } }, 'Clear')),
+    h('div', { class: 'dim' }, 'Placement follows the metadata (and any calibration lines) on average; registration only removes the frame-to-frame disagreement. Terrain relief comes from the elevation model in use; buildings and other things above it lean as in the pseudo-ortho.'));
 }
 
 /* =====================================================================
@@ -5321,7 +5715,7 @@ function init() {
     }
     origDraw();
   };
-  buildSetPane(); buildSearchPane(); buildExportPane(); buildMarksPane(); buildObjPane(); buildCalPane(); buildSfmPane();
+  buildSetPane(); buildSearchPane(); buildExportPane(); buildMarksPane(); buildObjPane(); buildCalPane(); buildSfmPane(); buildMosPane();
   requestAnimationFrame(loop);
 }
 init();
