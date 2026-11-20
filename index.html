@@ -159,6 +159,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
         <button id="bEnd" title="End (End)">▶|</button>
         <select id="rate" title="Playback rate"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option><option>8</option></select>
         <button id="bMark" title="Bookmark at playhead (M) · previous/next bookmark: , and .">◆ Mark</button>
+        <button id="bTag" title="Tag an object in this frame (T): click its outline corners on the video, double-click to close; or drag a box">◇ Tag object</button>
       </div>
       <div class="row" id="clipRow">
         <button id="bIn" title="Set clip in (I)">In</button>
@@ -200,7 +201,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.4.0', build: 6 };
+const BUILD = { ver: 'R0.4.1', build: 7 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -2403,7 +2404,7 @@ function drawTimeline() {
       tg.fillStyle = '#fff'; for (const s2 of o.samples) if (s2.src === 'analyst' && inView(s2.t)) tg.fillRect(tlX(s2.t) - 0.5, y, 1.5, Math.max(1, hh - 1)); });
   }
   // hits lane
-  lbl('HITS', LANE.hits[1]);
+  if (S.results.length) lbl('HITS', LANE.hits[1] + 3);
   for (const [i, r] of S.results.entries()) { if (r.t1 < v0 || r.t0 > v1) continue; tg.fillStyle = i === S.selRes ? '#6cc3ff' : 'rgba(108,195,255,.55)'; const a = tlX(Math.max(r.t0, v0)), b = tlX(Math.min(r.t1, v1)); tg.fillRect(a, LANE.hits[0], Math.max(2, b - a), LANE.hits[1] - LANE.hits[0]); }
   // chart lane
   const [clbl, key] = CHARTS[S.chartKey] || CHARTS.niirs, y0 = LANE.chart[0], y1 = LANE.chart[1];
@@ -3138,13 +3139,14 @@ function addSample(o, s) {
 
 /* ---------- tagging on the video ---------- */
 function startTag(redrawId) {
-  if (!S.dur) return;
+  if (!S.dur) { status('Load a video first, then pause on the frame showing the object and press Tag object', 'badc'); return; }
   P.pause(); OBJ.drawing = []; OBJ.redraw = redrawId || null;
   $('#vidOv').style.cursor = 'crosshair';
   status((redrawId ? 'Redraw ' + (OBJ.list.find(o => o.id === redrawId) || {}).code : 'Tag object') + ': click polygon vertices on the video, double-click or Enter to close · drag for a box · Esc cancels');
-  buildObjPane(); dirty();
+  buildObjPane(); tagBtn(); dirty();
 }
-function cancelTag() { OBJ.drawing = null; OBJ.redraw = null; status('Tagging cancelled'); buildObjPane(); dirty(); }
+function tagBtn() { const b = $('#bTag'); if (b) { b.textContent = OBJ.drawing ? '◇ Drawing… Esc' : '◇ Tag object'; b.classList.toggle('on', !!OBJ.drawing); } }
+function cancelTag() { OBJ.drawing = null; OBJ.redraw = null; status('Tagging cancelled'); buildObjPane(); tagBtn(); dirty(); }
 function finishTag(poly) {
   if (!poly || poly.length < 3) { cancelTag(); return; }
   const t = P.time(), c = polyC(poly), s = { t: S.frames.length ? S.frames[frameIndex(t)] : t, poly, c, g: groundOf(t, c), conf: 1, src: 'analyst' };
@@ -3156,7 +3158,7 @@ function finishTag(poly) {
     OBJ.list.push(o);
   }
   OBJ.drawing = null; OBJ.redraw = null; OBJ.sel = o.id; OBJ.lastTag = performance.now();
-  objectsChanged(); buildObjPane(true);
+  objectsChanged(); buildObjPane(true); tagBtn();
   status(o.code + ' tagged at ' + tcAt(t) + ' — name it in OBJECTS, then Track ▶ / ◀ Track');
   document.querySelector('[data-p=pObjects]').click();
   setTimeout(() => { const i = document.querySelector('#pObjects .mark.sel input[type=text]'); if (i) i.focus(); }, 50);
@@ -3461,7 +3463,7 @@ function buildObjPane(keep) {
   const fmtS = v => isNum(v) ? (v * 3.6).toFixed(1) + ' km/h' : '–';
   p.append(h('h3', null, 'Objects of interest'),
     h('div', { class: 'btns' },
-      h('button', { class: OBJ.drawing ? 'on' : '', onclick: () => OBJ.drawing ? cancelTag() : startTag(), disabled: !S.dur }, OBJ.drawing ? 'Drawing… (Esc)' : '◇ Tag object (T)'),
+      h('button', { class: OBJ.drawing ? 'on' : '', style: 'border-color:var(--acc);color:var(--acc)', onclick: () => OBJ.drawing ? cancelTag() : startTag() }, OBJ.drawing ? 'Drawing on the video… (Esc cancels)' : '◇ Tag object (T)'),
       OBJ.job ? h('button', { onclick: () => { OBJ.job.cancel = true; } }, '■ Stop tracking') : null,
       h('button', { onclick: () => exportObjects('geojson'), disabled: !OBJ.list.length }, 'GeoJSON'),
       h('button', { onclick: () => exportObjects('kml'), disabled: !OBJ.list.length }, 'KML'),
@@ -3470,7 +3472,7 @@ function buildObjPane(keep) {
     h('div', { class: 'grid2' },
       h('label', null, 'Track every Nth frame'), h('select', { onchange: e => { CFG.trackStep = +e.target.value; } }, [1, 2, 3, 5].map(n => h('option', { value: n, selected: CFG.trackStep === n }, n))),
       h('label', null, 'Min match score'), h('input', { type: 'number', step: 0.05, value: CFG.trackMinScore, onchange: e => { CFG.trackMinScore = +e.target.value; } })));
-  if (!OBJ.list.length) { p.append(h('p', { class: 'muted' }, 'No objects tagged.')); return; }
+  if (!OBJ.list.length) { p.append(h('ol', { class: 'note' }, h('li', null, S.dur ? 'Video loaded.' : 'Load a video (Open… or drag it onto the page).'), h('li', null, 'Pause on a frame where the object is visible (Space, or ← → to step).'), h('li', null, 'Press ◇ Tag object (here, under the video, or the T key). The cursor becomes a crosshair over the video.'), h('li', null, 'Click around the object on the video to place the outline corners, then double-click (or press Enter) to close it. Or drag a box around it.'), h('li', null, 'Name it here, then press Track ▶ to follow it forward (◀ Track for backward).'))); return; }
   for (const o of OBJ.list) {
     const st = objStats(o), an = o.samples.filter(s => s.src === 'analyst').length, sel = o.id === OBJ.sel;
     const span = o.samples.length ? [o.samples[0].t, o.samples[o.samples.length - 1].t] : null;
@@ -4092,6 +4094,7 @@ function init() {
   sp.addEventListener('pointerup', () => { sy = null; });
   installKeys();
   $('#bMark').onclick = addMark;
+  $('#bTag').onclick = () => OBJ.drawing ? cancelTag() : startTag();
   // follow camera
   const origDraw = MapV.draw.bind(MapV);
   MapV.draw = function () {
@@ -4101,7 +4104,7 @@ function init() {
     }
     origDraw();
   };
-  buildSetPane(); buildSearchPane(); buildExportPane(); buildMarksPane();
+  buildSetPane(); buildSearchPane(); buildExportPane(); buildMarksPane(); buildObjPane();
   requestAnimationFrame(loop);
 }
 init();
