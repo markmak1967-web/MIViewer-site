@@ -211,7 +211,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.6.1', build: 12 };
+const BUILD = { ver: 'R0.6.2', build: 13 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -980,7 +980,8 @@ function vfovOf(st) { if (isNum(st.vfov) && st.vfov > 0) return st.vfov; const [
 function hasPose(st) { return st && isNum(st.sensLat) && isNum(st.sensLon) && isNum(sensAltMSL(st)) && isNum(st.platHdg) && isNum(st.relAz) && isNum(st.relEl) && isNum(st.hfov) && st.hfov > 0; }
 function sensorRot(st) {
   const P = m3(m3(rz(st.platHdg * D2R), ry((st.platPitch || 0) * D2R)), rx((st.platRoll || 0) * D2R));
-  const Q = m3(m3(rz(st.relAz * D2R), ry(st.relEl * D2R)), rx((st.relRoll || 0) * D2R));
+  const aA = S.anchor && S.anchor.on && isNum(st.ancAz) ? st.ancAz : 0, aE = S.anchor && S.anchor.on && isNum(st.ancEl) ? st.ancEl : 0;
+  const Q = m3(m3(rz((st.relAz + aA) * D2R), ry((st.relEl + aE) * D2R)), rx((st.relRoll || 0) * D2R));
   return m3(P, Q);
 }
 function pixelDir(st, R, u, v) {
@@ -1627,6 +1628,7 @@ function rebuildTrack() {
   applyAssumptions(S.klv);
   S.tier = S.klv.length ? computeTier() : null;
   S.track = S.klv.length ? new Track(S.klv) : null;
+  computeAnchors();
   updateTierBadge();
   computeDerived();
 }
@@ -2747,6 +2749,7 @@ function geomProv(st, kind) {
   if (p.hfov === 'd') notes.push('HFOV from focal length');
   if (!(isNum(st.vfov) && st.vfov > 0)) notes.push('VFOV from aspect');
   if (typeof CAL !== 'undefined' && CAL.on && CAL.list.some(c => c.on !== false && c.corr)) notes.push('analyst-calibrated (' + CAL.list.filter(c => c.on !== false && c.corr).length + ' control line(s))');
+  if (S.anchor && S.anchor.on) notes.push('pointing anchored to encoder frame centre');
   if (DEM.active()) notes.push('terrain: DEM');
   else if (isNum(st.fcElev) || isNum(st.fcHAE)) notes.push('ground: KLV frame-centre elevation');
   else { level = 'a'; notes.push('ground: flat ' + CFG.flatElev + ' m'); }
@@ -2772,6 +2775,54 @@ function drawPossibleCoverage(g, st) {
   const [x, y] = MapV.toScr(st.sensLat, st.sensLon), [x2] = MapV.toScr(st.sensLat, st.sensLon + r / mpdLon(st.sensLat));
   g.save(); g.beginPath(); g.arc(x, y, Math.abs(x2 - x), 0, 7); g.fillStyle = hatchPattern(g); g.fill();
   g.strokeStyle = 'rgba(227,181,95,.8)'; g.setLineDash([2, 3]); g.lineWidth = 1; g.stroke(); g.restore();
+}
+
+/* ---------- anchor sensor pointing to the encoder's frame centre ----------
+   Some encoders send platform attitude and gimbal angles that are individually noisy or sampled
+   at different instants (the gimbal compensates aircraft roll, so the sum wobbles), while their own
+   frame-centre point (tags 23/24) comes from a coherent line-of-sight solution and is smooth.
+   Where both exist, a small azimuth/elevation correction per packet makes the sensor model hit the
+   encoder's frame centre; it is interpolated between packets like any other value. Measured angles
+   are never altered. Auto mode turns this on when the computed centre is much noisier. */
+Object.assign(CFG, { anchorFC: 'auto' });
+function hpNoise(P) { // high-frequency noise of a point series (m): deviation from the mean of +/-3 neighbours
+  let s = 0, c = 0;
+  for (let i = 3; i < P.length - 3; i++) { let a = 0, b = 0; for (let j = -3; j <= 3; j++) if (j) { a += P[i + j][0]; b += P[i + j][1]; } const dn = (P[i][0] - a / 6) * 110574, de = (P[i][1] - b / 6) * 111320 * Math.cos(P[i][0] * D2R); s += dn * dn + de * de; c++; }
+  return c ? Math.sqrt(s / c) : 0;
+}
+function computeAnchors() {
+  const A = S.anchor = { on: false, mode: CFG.anchorFC, n: 0, noiseRaw: null, noiseEnc: null, noiseAnch: null, maxCorr: 0 };
+  if (!S.track || CFG.anchorFC === 'off') return;
+  const R = S.track.recs.filter(r => isNum(r.f.fcLat) && isNum(r.f.fcLon) && hasPose(r.g));
+  if (R.length < 8) return;
+  const saveDEM = DEM.active; DEM.active = () => false; // solve against the encoder's own flat ground (its frame-centre elevation)
+  try {
+    const raw = [], enc = [];
+    for (const r of R) { const st = { ...r.g, t: r.t }; delete st.ancAz; delete st.ancEl; const P = makeProjectorRaw(st); const g = P && P.toGround(0, 0); raw.push(g && !g.horizon ? [g.lat, g.lon] : [r.f.fcLat, r.f.fcLon]); enc.push([r.f.fcLat, r.f.fcLon]); }
+    A.noiseRaw = hpNoise(raw); A.noiseEnc = hpNoise(enc);
+    const want = CFG.anchorFC === 'on' || (A.noiseRaw > 1.5 && A.noiseRaw > 3 * A.noiseEnc);
+    for (const r of S.track.recs) { delete r.g.ancAz; delete r.g.ancEl; }
+    if (!want) return;
+    const out = [];
+    for (const r of R) {
+      const base = { ...r.g, t: r.t }; delete base.ancAz; delete base.ancEl;
+      const m = mpdLat(r.f.fcLat), mo = mpdLon(r.f.fcLat);
+      const res = x => { const P = makeProjectorRaw({ ...base, relAz: base.relAz + x[0], relEl: base.relEl + x[1] }); const g = P && P.toGround(0, 0); return g && !g.horizon ? [(g.lat - r.f.fcLat) * m, (g.lon - r.f.fcLon) * mo] : null; };
+      let x = [0, 0], e = res(x); if (!e) continue;
+      for (let it = 0; it < 6 && Math.hypot(...e) > 0.05; it++) {
+        const h = 0.01, ea = res([x[0] + h, x[1]]), ee = res([x[0], x[1] + h]); if (!ea || !ee) break;
+        const J = [[(ea[0] - e[0]) / h, (ee[0] - e[0]) / h], [(ea[1] - e[1]) / h, (ee[1] - e[1]) / h]], det = J[0][0] * J[1][1] - J[0][1] * J[1][0]; if (Math.abs(det) < 1e-9) break;
+        const dx = [(-e[0] * J[1][1] + e[1] * J[0][1]) / det, (e[0] * J[1][0] - e[1] * J[0][0]) / det];
+        const xn = [x[0] + dx[0], x[1] + dx[1]], en = res(xn); if (!en) break; x = xn; e = en;
+      }
+      if (Math.hypot(...e) > 2 || Math.abs(x[0]) > 5 || Math.abs(x[1]) > 5) continue; // implausible: leave this packet unanchored
+      r.g.ancAz = x[0]; r.g.ancEl = x[1]; A.n++; A.maxCorr = Math.max(A.maxCorr, Math.hypot(...x));
+    }
+    if (A.n < R.length * 0.5) { for (const r of S.track.recs) { delete r.g.ancAz; delete r.g.ancEl; } A.n = 0; return; }
+    A.on = true;
+    for (const r of R) { if (!isNum(r.g.ancAz)) continue; const P = makeProjectorRaw({ ...r.g, t: r.t }); const g = P && P.toGround(0, 0); out.push(g && !g.horizon ? [g.lat, g.lon] : [r.f.fcLat, r.f.fcLon]); }
+    A.noiseAnch = hpNoise(out);
+  } finally { DEM.active = saveDEM; }
 }
 
 /* =====================================================================
@@ -4005,6 +4056,7 @@ function buildFilePane() {
   const kv = rows => h('table', null, rows.map(([k, val]) => h('tr', null, h('td', { class: 'k' }, k), h('td', null, val))));
   p.append(h('h3', null, 'Source'), kv([
     ['File', S.name || '–'],
+    ...(S.anchor && S.anchor.on ? [['Pointing', 'anchored to encoder frame centre: camera angles wobble ' + S.anchor.noiseRaw.toFixed(1) + ' m vs encoder centre ' + S.anchor.noiseEnc.toFixed(1) + ' m (corrections ≤ ' + S.anchor.maxCorr.toFixed(2) + '°; Settings → Anchor to encoder centre)']] : []),
     ...(S.libItemId ? [['Library item', S.libItemId + ' (bookmarks saved to catalogue)']] : []), ['Size', S.size ? (S.size / 1048576).toFixed(2) + ' MB' : '–'],
     ['Container', S.kind === 'ts' ? 'MPEG-2 TS (' + S.ts.det.ps + '-byte packets, ' + S.ts.pktCount.toLocaleString() + ' pkts)' : S.kind === 'mp4' ? 'ISO BMFF (MP4/MOV)' : 'sidecar only'],
     ['Duration', fmtT(S.dur)],
@@ -4495,9 +4547,10 @@ function buildSetPane() {
     h('h3', null, 'Footprint & interpolation'),
     h('div', { class: 'grid2' },
       h('label', null, 'Footprint source'), sel('footprint', [['auto', 'Auto (pose → corners)'], ['computed', 'Sensor model only'], ['metadata', 'KLV corners only']], true),
+      h('label', { title: 'Where the metadata has both camera angles and the encoder frame centre (tags 23/24): correct pointing so the sensor model hits the encoder centre. Removes wobble when the angles are noisy or sampled at different instants.' }, 'Anchor to encoder centre'), sel('anchorFC', [['auto', 'Auto (when angles are noisier)'], ['on', 'On'], ['off', 'Off (raw angles)']], true, () => rebuildTrack()),
       h('label', null, 'Interpolation'), sel('interp', [['nearest', 'Nearest packet'], ['linear', 'Linear (angle-aware)'], ['spline', 'Catmull-Rom position']], true),
-      h('label', { title: 'How long a sparse tag value is carried forward' }, 'Hold sparse tags s'), num('holdMax', true, 0.5, () => { S.track = S.klv.length ? new Track(S.klv) : null; }),
-      h('label', { title: 'Shift metadata against video (positive = later)' }, 'KLV time offset s'), h('input', { type: 'number', value: CFG.klvOffset, step: 0.01, onchange: e => { const nv = parseFloat(e.target.value) || 0, d = nv - CFG.klvOffset; CFG.klvOffset = nv; S.klv.forEach(r => r.t += d); S.track = S.klv.length ? new Track(S.klv) : null; apply(true); } }),
+      h('label', { title: 'How long a sparse tag value is carried forward' }, 'Hold sparse tags s'), num('holdMax', true, 0.5, () => rebuildTrack()),
+      h('label', { title: 'Shift metadata against video (positive = later)' }, 'KLV time offset s'), h('input', { type: 'number', value: CFG.klvOffset, step: 0.01, onchange: e => { const nv = parseFloat(e.target.value) || 0, d = nv - CFG.klvOffset; CFG.klvOffset = nv; S.klv.forEach(r => r.t += d); rebuildTrack(); apply(true); } }),
       h('label', null, 'History step s'), num('histStep', true, 0.5),
       h('label', null, 'Image size override'), h('div', { class: 'row' }, num('imgW', true, 1), num('imgH', true, 1))),
     h('label', null, h('input', { type: 'checkbox', id: 'cMetaCorners', checked: true, onchange: dirty }), ' show encoder (KLV) corners when using the sensor model'),
