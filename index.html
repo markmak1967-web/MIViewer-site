@@ -54,6 +54,8 @@ body.dragover #mapWrap{outline:2px dashed var(--acc);outline-offset:-6px}
 #vid{width:100%;height:100%;display:block;object-fit:fill}
 #vidOv{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}
 #vid{transform-origin:50% 50%}
+#sfm3d{position:absolute;inset:0;z-index:5;background:var(--bg);display:none;flex-direction:column}
+#sfmCv{flex:1;width:100%;min-height:0;display:block;cursor:grab}
 table.caltab{width:100%;border-collapse:collapse}
 table.caltab td{white-space:nowrap;padding:2px 3px}
 table.caltab button{padding:1px 6px}
@@ -189,6 +191,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
     <button data-p="pMarks">MARKS</button>
     <button data-p="pObjects">OBJECTS</button>
     <button data-p="pCal">CAL</button>
+    <button data-p="p3d">3D</button>
     <button data-p="pSearch">SEARCH</button>
     <button data-p="pExport">EXPORT</button>
     <button data-p="pSet">SETTINGS</button>
@@ -198,6 +201,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
   <div class="pane" id="pMarks"></div>
   <div class="pane" id="pObjects"></div>
   <div class="pane" id="pCal"></div>
+  <div class="pane" id="p3d"></div>
   <div class="pane" id="pSearch"></div>
   <div class="pane" id="pExport"></div>
   <div class="pane" id="pSet"></div>
@@ -211,7 +215,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.7.0', build: 14 };
+const BUILD = { ver: 'R0.8.0', build: 15 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -1618,7 +1622,7 @@ function finishLoad() {
   DEM.reset(); preloadDEM();
   if (S.bbox) MapV.fit(S.bbox);
   buildFilePane(); buildMetaPane(); buildSearchPane(); buildExportPane();
-  TL.v0 = TL.v1 = 0; thumbsReset(); loadMarks(S.libMarks); loadObjects(); loadCal(); vzReset();
+  TL.v0 = TL.v1 = 0; thumbsReset(); loadMarks(S.libMarks); loadObjects(); loadCal(); vzReset(); if (typeof SFM !== 'undefined') { SFM.res = null; if ($('#sfm3d')) $('#sfm3d').style.display = 'none'; buildSfmPane(); }
   seek(S.frames.length ? S.frames[0] : 0);
   dirty();
 }
@@ -1800,6 +1804,7 @@ MapV.overlay = g => {
   }
   if (S.pick) { const [x, y] = MapV.toScr(S.pick.lat, S.pick.lon); g.strokeStyle = '#fff'; g.lineWidth = 2; g.beginPath(); g.arc(x, y, 6, 0, 7); g.stroke(); g.strokeStyle = COL.acc; g.lineWidth = 1; g.beginPath(); g.arc(x, y, 6, 0, 7); g.stroke(); }
   if (typeof drawObjectsMap === 'function') { g.save(); drawObjectsMap(g); g.restore(); }
+  if (typeof sfmDrawMap === 'function') { g.save(); sfmDrawMap(g); g.restore(); }
   if (typeof calDrawMap === 'function') { g.save(); calDrawMap(g); g.restore(); }
 };
 function updateLegend() {
@@ -3972,7 +3977,7 @@ function grayPyr(G) {
 }
 const bil = (L, x, y) => { if (x < 0 || y < 0 || x > L.w - 1.001 || y > L.h - 1.001) return NaN; const xi = x | 0, yi = y | 0, fx = x - xi, fy = y - yi, k = yi * L.w + xi, d = L.d; return (d[k] * (1 - fx) + d[k + 1] * fx) * (1 - fy) + (d[k + L.w] * (1 - fx) + d[k + L.w + 1] * fx) * fy; };
 /* Shi–Tomasi corners; inside(x,y) restricts the region; step samples the candidate grid */
-function goodFeatures(L, box, inside, maxN, minDist, step = 1, avoid = []) {
+function goodFeatures(L, box, inside, maxN, minDist, step = 1, avoid = [], quality = 0.02) {
   const [bx, by, bw, bh] = box, x0 = Math.max(3, bx | 0), y0 = Math.max(3, by | 0), x1 = Math.min(L.w - 4, (bx + bw) | 0), y1 = Math.min(L.h - 4, (by + bh) | 0), d = L.d, w = L.w;
   const C = []; let mx = 0;
   for (let y = y0; y <= y1; y += step) for (let x = x0; x <= x1; x += step) {
@@ -3984,42 +3989,44 @@ function goodFeatures(L, box, inside, maxN, minDist, step = 1, avoid = []) {
   C.sort((p, q) => q[0] - p[0]);
   const out = [...avoid.map(p => [p[0], p[1], true])], md2 = minDist * minDist;
   for (const [l, x, y] of C) {
-    if (l < mx * 0.02 || out.length - avoid.length >= maxN) break;
+    if (l < mx * quality || out.length - avoid.length >= maxN) break;
     if (out.every(p => (p[0] - x) ** 2 + (p[1] - y) ** 2 >= md2)) out.push([x, y]);
   }
   return out.filter(p => !p[2]).map(p => [p[0], p[1]]);
 }
-/* pyramidal LK for one point; g = predicted displacement at level 0 */
-function lkPoint(A, B, x, y, gx, gy) {
-  const W = CFG.flowWin, top = A.length - 1; let dx = gx / (1 << top), dy = gy / (1 << top), res = 0;
+const bilC = (L, x, y) => { x = x < 0 ? 0 : x > L.w - 1.001 ? L.w - 1.001 : x; y = y < 0 ? 0 : y > L.h - 1.001 ? L.h - 1.001 : y; const xi = x | 0, yi = y | 0, fx = x - xi, fy = y - yi, k = yi * L.w + xi, d = L.d; return (d[k] * (1 - fx) + d[k + 1] * fx) * (1 - fy) + (d[k + L.w] * (1 - fx) + d[k + L.w + 1] * fx) * fy; };
+/* pyramidal LK for one point; g = predicted displacement at level 0. Sampling is edge-clamped, so points near
+   the frame edge still track (the coarse levels' windows reach far beyond the edge); the result must land inside. */
+function lkPoint(A, B, x, y, gx, gy, win) {
+  const W = win || CFG.flowWin, top = A.length - 1; let dx = gx / (1 << top), dy = gy / (1 << top), res = 0;
   for (let l = top; l >= 0; l--) {
     const La = A[l], Lb = B[l], s = 1 / (1 << l), px = x * s, py = y * s, n = (2 * W + 1) ** 2;
     const I0 = new Float32Array(n), Ix = new Float32Array(n), Iy = new Float32Array(n);
     let gxx = 0, gxy = 0, gyy = 0, q = 0;
     for (let j = -W; j <= W; j++) for (let i = -W; i <= W; i++, q++) {
-      const v = bil(La, px + i, py + j), vx = (bil(La, px + i + 1, py + j) - bil(La, px + i - 1, py + j)) * 0.5, vy = (bil(La, px + i, py + j + 1) - bil(La, px + i, py + j - 1)) * 0.5;
-      if (!(v === v && vx === vx && vy === vy)) return null;
+      const v = bilC(La, px + i, py + j), vx = (bilC(La, px + i + 1, py + j) - bilC(La, px + i - 1, py + j)) * 0.5, vy = (bilC(La, px + i, py + j + 1) - bilC(La, px + i, py + j - 1)) * 0.5;
       I0[q] = v; Ix[q] = vx; Iy[q] = vy; gxx += vx * vx; gxy += vx * vy; gyy += vy * vy;
     }
     const det = gxx * gyy - gxy * gxy; if (det < 1e-3 * n * n) return null;
     for (let it = 0; it < 12; it++) {
       let bx = 0, by = 0, e2 = 0; q = 0;
-      for (let j = -W; j <= W; j++) for (let i = -W; i <= W; i++, q++) { const v = bil(Lb, px + dx + i, py + dy + j); if (v !== v) return null; const e = I0[q] - v; bx += e * Ix[q]; by += e * Iy[q]; e2 += Math.abs(e); }
+      for (let j = -W; j <= W; j++) for (let i = -W; i <= W; i++, q++) { const v = bilC(Lb, px + dx + i, py + dy + j); const e = I0[q] - v; bx += e * Ix[q]; by += e * Iy[q]; e2 += Math.abs(e); }
       const vx = (gyy * bx - gxy * by) / det, vy = (gxx * by - gxy * bx) / det; dx += vx; dy += vy; res = e2 / n;
       if (vx * vx + vy * vy < 1e-4) break;
     }
     if (l > 0) { dx *= 2; dy *= 2; }
   }
-  return [x + dx, y + dy, res];
+  const fx = x + dx, fy = y + dy; if (!(fx >= 0 && fy >= 0 && fx <= A[0].w - 1 && fy <= A[0].h - 1)) return null;
+  return [fx, fy, res];
 }
 /* forward–backward tracked pairs */
-function flowPairs(A, B, pts, guess) {
+function flowPairs(A, B, pts, guess, fbMax = CFG.flowFB) {
   const out = [];
   for (let i = 0; i < pts.length; i++) {
     const [x, y] = pts[i], g = guess ? guess(x, y) : [0, 0];
     const f = lkPoint(A, B, x, y, g[0], g[1]); if (!f) continue;
     const r = lkPoint(B, A, f[0], f[1], x - f[0], y - f[1]); if (!r) continue;
-    const fb = Math.hypot(r[0] - x, r[1] - y); if (fb > CFG.flowFB) continue;
+    const fb = Math.hypot(r[0] - x, r[1] - y); if (fb > fbMax) continue;
     out.push({ p: [x, y], q: [f[0], f[1]], fb, res: f[2] });
   }
   return out;
@@ -4043,8 +4050,8 @@ function ransacSim(P, thr = 1.5, iters = 80) {
   return { ...best, inl, n: inl.length, ratio: inl.length / P.length };
 }
 /* camera motion from background points (robust to burned-in symbology); same form as globalMotion */
-function bgFlowMotion(A, B, guess, excl) {
-  const L = A[0], ex = excl, inside = (x, y) => !(ex && x > ex[0] && x < ex[0] + ex[2] && y > ex[1] && y < ex[1] + ex[3]);
+function bgFlowMotion(A, B, guess, excl, mask) {
+  const L = A[0], ex = excl, inside = (x, y) => !(ex && x > ex[0] && x < ex[0] + ex[2] && y > ex[1] && y < ex[1] + ex[3]) && !(mask && mask.m[((y / mask.f) | 0) * mask.w + ((x / mask.f) | 0)]);
   const pts = goodFeatures(L, [L.w * 0.04, L.h * 0.04, L.w * 0.92, L.h * 0.92], inside, 90, Math.max(16, L.w / 36), 4);
   if (pts.length < 20) return null;
   const pr = flowPairs(A, B, pts, guess ? (x, y) => { const q = gmApply(guess, [x, y]); return [q[0] - x, q[1] - y]; } : null);
@@ -4318,6 +4325,396 @@ function exportCal() {
   }
   for (const m of CAL.meas) if (m.g) F.push({ type: 'Feature', properties: { kind: 'measurement', id: m.id, name: 'M' + m.n, t: m.t, timecode: tcOf(m.t), distance_m: +m.dist.toFixed(3), bearing_deg: +m.brg.toFixed(2), dh_m: m.dh != null ? +m.dh.toFixed(2) : null, calibrated: m.cal, uncalibrated_distance_m: m.distRaw != null ? +m.distRaw.toFixed(3) : null, image_uv: m.img }, geometry: { type: 'LineString', coordinates: m.g.map(p => [p.lon, p.lat, +(p.h || 0).toFixed(1)]) } });
   download((S.name || 'misb').replace(/\.[^.]+$/, '') + '_calibration.geojson', JSON.stringify({ type: 'FeatureCollection', name: S.name + ' calibration and measurements', features: F }), 'application/geo+json');
+}
+
+/* =====================================================================
+   3-D: photogrammetric point cloud from overlapping frames (structure from motion)
+   1. Feature tracks: Shi–Tomasi corners followed with pyramidal LK (forward–backward checked)
+      across the selected stretch of video, recorded at keyframes.
+   2. Camera poses from the metadata (sensor model incl. encoder anchoring and calibration lines).
+   3. Multi-view triangulation (ray midpoint, in the same curved-earth convention as the ray caster),
+      then a light bundle adjustment: per-keyframe pointing (3 angles) and field-of-view corrections
+      with priors, alternating with re-triangulation; outliers (moving vehicles, burned-in symbology,
+      mismatches) are rejected by reprojection error and view geometry.
+   4. Output: coloured points (WGS84 + local ENU), 3-D viewer, map overlay, PLY/CSV/grid exports,
+      and an elevation grid that can drive the footprint and pseudo-ortho.
+   ===================================================================== */
+Object.assign(CFG, { sfmWin: 7, sfmQual: 0.08, sfmFB: 2.0, sfmDense: true, sfmDenseStep: 3, sfmBA: true, sfmKf: 0.5, sfmStep: 3, sfmPts: 500, sfmMinViews: 3, sfmMinAng: 3, sfmMaxErr: 1.5, sfmMap: true, sfmColor: 'rgb', sfmPtSize: 2 });
+const SFM = { job: null, res: null, view: null };
+
+/* ---------- camera model for one time (same as the app's projector) ---------- */
+function sfmCamera(t) {
+  let st = S.track && S.track.at(t); if (!st || !useComputed(st)) return null;
+  const KK = typeof calAt === 'function' ? calAt(t) : null;
+  if (KK && KK.sens) st = stCorr(st, [KK.sens.az, KK.sens.el, KK.sens.roll, Math.log(KK.sens.k)]);
+  if (!hasPose(st)) return null;
+  return { t, lat: st.sensLat, lon: st.sensLon, alt: sensAltMSL(st), R: sensorRot(st), th: Math.tan(st.hfov * D2R / 2), tv: Math.tan(vfovOf(st) * D2R / 2), st };
+}
+/* local map frame: N, E metres about the origin, U = height (m MSL); rays follow the ray caster's
+   convention (camera-local tangent plane + curvature drop), so results agree with footprints and picks */
+function sfmFrame(o) {
+  const mLat0 = mpdLat(o.lat), mLon0 = mpdLon(o.lat);
+  return {
+    o, toNEU: (lat, lon, h) => [(lat - o.lat) * mLat0, (lon - o.lon) * mLon0, h],
+    toLLH: (N, E, U) => ({ lat: o.lat + N / mLat0, lon: o.lon + E / mLon0, h: U }),
+    cam(c, corr) { // corrections: [rx, ry, rz, lnf] in the camera frame
+      const x = corr || [0, 0, 0, 0], Rc = m3(m3(rx(x[0]), ry(x[1])), rz(x[2]));
+      const R = m3(c.R, Rc), th = c.th * Math.exp(x[3]), tv = c.tv * Math.exp(x[3]);
+      const kN = mpdLat(c.lat) ? mLat0 / mpdLat(c.lat) : 1, kE = mpdLon(c.lat) ? mLon0 / mpdLon(c.lat) : 1;
+      const C = [(c.lat - o.lat) * mLat0, (c.lon - o.lon) * mLon0, c.alt];
+      return {
+        C, R, th, tv, kN, kE,
+        ray(u, v) { const d = norm3(mv3(R, [1, u * th, v * tv])); return d; }, // NED in the camera's tangent frame
+        at(d, r) { const n = d[0] * r, e = d[1] * r; return [C[0] + n * kN, C[1] + e * kE, C[2] - d[2] * r + (n * n + e * e) / (2 * RE)]; },
+        project(X) { const n = (X[0] - C[0]) / kN, e = (X[1] - C[1]) / kE, dn = C[2] - X[2] + (n * n + e * e) / (2 * RE); const q = mtv3(R, [n, e, dn]); if (q[0] <= 1) return null; return [q[1] / q[0] / th, q[2] / q[0] / tv]; },
+      };
+    },
+  };
+}
+/* multi-view triangulation: least-squares closest point to all rays (tangent lines at the current range) */
+function sfmTriangulate(obs, cams) {
+  let X = null, r = obs.map(() => 2000);
+  for (let it = 0; it < 3; it++) {
+    const A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], b = [0, 0, 0];
+    for (let i = 0; i < obs.length; i++) {
+      const cm = cams[obs[i].k], d = cm.ray(obs[i].u, obs[i].v), P = cm.at(d, r[i]), P2 = cm.at(d, r[i] + 1);
+      let w = [P2[0] - P[0], P2[1] - P[1], P2[2] - P[2]]; const l = Math.hypot(...w); w = w.map(x => x / l);
+      for (let a = 0; a < 3; a++) for (let c = 0; c < 3; c++) { const m = (a === c ? 1 : 0) - w[a] * w[c]; A[a][c] += m; b[a] += m * P[c]; }
+    }
+    X = solve3(A, b); if (!X) return null;
+    for (let i = 0; i < obs.length; i++) { const cm = cams[obs[i].k]; r[i] = Math.max(10, Math.hypot((X[0] - cm.C[0]) / cm.kN, (X[1] - cm.C[1]) / cm.kE, X[2] - cm.C[2])); }
+  }
+  return X;
+}
+function solve3(A, b) {
+  const M = A.map((r, i) => [...r, b[i]]);
+  for (let i = 0; i < 3; i++) { let p = i; for (let k = i + 1; k < 3; k++) if (Math.abs(M[k][i]) > Math.abs(M[p][i])) p = k; if (Math.abs(M[p][i]) < 1e-12) return null; [M[i], M[p]] = [M[p], M[i]]; for (let k = i + 1; k < 3; k++) { const f = M[k][i] / M[i][i]; for (let j = i; j < 4; j++) M[k][j] -= f * M[i][j]; } }
+  const x = [0, 0, 0]; for (let i = 2; i >= 0; i--) { let s = M[i][3]; for (let j = i + 1; j < 3; j++) s -= M[i][j] * x[j]; x[i] = s / M[i][i]; } return x;
+}
+
+/* overlay (burned-in symbology) mask at 1/4 resolution, dilated; null if the scene itself is static */
+async function sfmOverlayMask(i0, i1) {
+  // burned-in symbology = strong edges that stay in exactly the same place while the scene moves
+  const N = 8, W = TRK.W; let H = 0; const mg = [];
+  for (let j = 0; j < N; j++) {
+    const G = await grabRGB(S.frames[Math.round(i0 + (i1 - i0) * j / (N - 1))] + 1e-3); H = TRK.H;
+    const L = new Float32Array(W * H); for (let i = 0; i < L.length; i++) L[i] = 0.299 * G[0][i] + 0.587 * G[1][i] + 0.114 * G[2][i];
+    const g = new Float32Array(W * H); for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) { const k = y * W + x; g[k] = Math.abs(L[k + 1] - L[k - 1]) + Math.abs(L[k + W] - L[k - W]); }
+    mg.push(g);
+  }
+  const n = W * H, st = new Uint8Array(n); let stat = 0, edges = 0;
+  for (let i = 0; i < n; i++) { let m = 0, mn = 1e9; for (const g of mg) { m += g[i]; if (g[i] < mn) mn = g[i]; } m /= N; if (m > 20) edges++; if (m > 20 && mn > 0.45 * m) { st[i] = 1; stat++; } }
+  if (stat > edges * 0.6) return null; // scene hardly moving: cannot tell overlay from scene
+  const m = new Uint8Array(n), R = 4;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { if (!st[y * W + x]) continue; for (let j = -R; j <= R; j++) for (let i = -R; i <= R; i++) { const yy = y + j, xx = x + i; if (yy >= 0 && xx >= 0 && yy < H && xx < W) m[yy * W + xx] = 1; } }
+  let mm = 0; for (let i = 0; i < n; i++) mm += m[i]; SFM.ovlFrac = mm / n;
+  return { m, w: W, h: H, f: 1 };
+}
+/* ---------- build ---------- */
+async function sfmBuild() {
+  if (SFM.job) return;
+  if (!S.playable || !S.track) { status('3-D needs decodable video with sensor geometry', 'badc'); return; }
+  P.pause();
+  const t0 = isNum(S.inT) && isNum(S.outT) && S.outT > S.inT ? S.inT : Math.max(S.frames[0], P.time() - 8), t1 = isNum(S.inT) && isNum(S.outT) && S.outT > S.inT ? S.outT : Math.min(S.frames[S.frames.length - 1], P.time() + 8);
+  const job = SFM.job = { cancel: false, stage: 'tracking', p: 0, t0, t1 };
+  buildSfmPane();
+  try {
+    const v = await trkVideo(); if (!v) throw new Error('could not open the video');
+    const i0 = frameIndex(t0), i1 = frameIndex(t1), step = CFG.sfmStep, kfEvery = Math.max(1, Math.round(CFG.sfmKf / (frameDt() * step)));
+    // burned-in symbology: pixels that stay constant over frames spread across the range while the scene moves
+    job.stage = 'masking overlay'; buildSfmPane();
+    const ovl = await sfmOverlayMask(i0, i1);
+    let G = await grabRGB(S.frames[i0] + 1e-3), GP = grayPyr(G), L1 = lumPyr(G); job.stage = 'tracking';
+    const Wd = TRK.W, Hd = TRK.H, toUv = (x, y) => [(x + 0.5) / Wd * 2 - 1, (y + 0.5) / Hd * 2 - 1]; // array index i is the centre of pixel i
+    const kfs = [], tracks = []; SFM.kill = {};
+    const minD = Math.max(8, Wd / 45);
+    const spawn = (kIdx) => {
+      const alive = tracks.filter(tr => tr.alive).map(tr => tr.cur);
+      const pts = goodFeatures(GP[0], [10, 10, Wd - 20, Hd - 20], ovl ? (x, y) => !ovl.m[((y / ovl.f) | 0) * ovl.w + ((x / ovl.f) | 0)] : () => true, Math.max(0, CFG.sfmPts - alive.length), minD, 2, alive, CFG.sfmQual);
+      for (const [x, y] of pts) { const k = (y | 0) * Wd + (x | 0); tracks.push({ obs: [{ k: kIdx, x, y }], cur: [x, y], alive: true, col: [G[0][k], G[1][k], G[2][k]] }); }
+    };
+    let kfGP = null, chain = []; // camera motion since the last keyframe (list of frame-to-frame similarities)
+    const pred = (x, y) => { let p = [x, y]; for (const m of chain) p = gmApply(m, p); return p; };
+    const edge = 8;
+    const addKf = (t) => {
+      // match every track directly from the previous keyframe, starting from the composed camera motion
+      // (one forward–backward-checked step per keyframe link instead of many fragile frame-to-frame steps)
+      if (kfGP) for (const tr of tracks) {
+        if (!tr.alive) continue;
+        const [px, py] = pred(tr.kfp[0], tr.kfp[1]);
+        if (px < edge || py < edge || px > Wd - edge || py > Hd - edge) { tr.alive = false; SFM.kill['left frame'] = (SFM.kill['left frame'] || 0) + 1; continue; }
+        const f = lkPoint(kfGP, GP, tr.kfp[0], tr.kfp[1], px - tr.kfp[0], py - tr.kfp[1], CFG.sfmWin);
+        const r = f && lkPoint(GP, kfGP, f[0], f[1], tr.kfp[0] - f[0], tr.kfp[1] - f[1], CFG.sfmWin);
+        const why = !f ? 'kf-lk' : !r ? 'kf-back' : Math.hypot(r[0] - tr.kfp[0], r[1] - tr.kfp[1]) > CFG.sfmFB ? 'kf-fb' : Math.hypot(f[0] - px, f[1] - py) > Math.max(40, Wd / 12) ? 'kf-far' : '';
+        if (why) { SFM.kill[why] = (SFM.kill[why] || 0) + 1; tr.alive = false; continue; }
+        tr.cur = [f[0], f[1]];
+      }
+      const g8 = new Uint8ClampedArray(GP[0].d), rgb = new Uint8ClampedArray(Wd * Hd * 3); for (let q = 0, j = 0; q < Wd * Hd; q++) { rgb[j++] = G[0][q]; rgb[j++] = G[1][q]; rgb[j++] = G[2][q]; }
+      const c = sfmCamera(t); kfs.push({ t, cam: c, g8, rgb }); const kIdx = kfs.length - 1;
+      for (const tr of tracks) if (tr.alive) { tr.obs.push({ k: kIdx, x: tr.cur[0], y: tr.cur[1] }); tr.kfp = tr.cur.slice(); }
+      spawn(kIdx); for (const tr of tracks) if (tr.alive && !tr.kfp) tr.kfp = tr.cur.slice();
+      kfGP = GP; chain = [];
+    };
+    addKf(S.frames[i0]); for (const tr of tracks) tr.obs.length = 1;
+    let n = 0;
+    for (let i = i0 + step; i <= i1; i += step) {
+      if (job.cancel) throw new Error('cancelled');
+      const t = S.frames[i]; const G2 = await grabRGB(t + 1e-3), GP2 = grayPyr(G2);
+      const L2 = lumPyr(G2), gc = globalMotion(L1, L2, null); L1 = L2; // coarse whole-frame shift seeds the point-based camera motion
+      const gm = bgFlowMotion(GP, GP2, gc.weak ? null : gc, null, ovl) || (gc.weak ? null : gc);
+      if (!gm) SFM.kill.gm = (SFM.kill.gm || 0) + 1;
+      chain.push(gm || { a: 1, b: 0, tx: 0, ty: 0 });
+      G = G2; GP = GP2;
+      if (++n % kfEvery === 0) addKf(t);
+      job.p = (i - i0) / Math.max(1, i1 - i0); if (n % 4 === 0) { buildSfmPane(); await new Promise(r => setTimeout(r)); }
+    }
+    // ---- triangulate + refine ----
+    job.stage = 'triangulating'; buildSfmPane(); await new Promise(r => setTimeout(r));
+    const mid = kfs[kfs.length >> 1].cam; if (!mid) throw new Error('no sensor geometry in this range');
+    const Pm = makeProjectorRaw(mid.st), gc = Pm && Pm.toGround(0, 0);
+    const F = sfmFrame({ lat: gc && !gc.horizon ? gc.lat : mid.lat, lon: gc && !gc.horizon ? gc.lon : mid.lon });
+    const corr = kfs.map(() => [0, 0, 0, 0]);
+    let cams = kfs.map((k, i) => k.cam ? F.cam(k.cam, corr[i]) : null);
+    // tracks -> observations in normalised image coordinates; drop burned-in symbology (does not move while the scene does)
+    let T = tracks.filter(tr => tr.obs.length >= CFG.sfmMinViews).map(tr => ({ col: tr.col, obs: tr.obs.filter(o => cams[o.k]).map(o => { const [u, v] = toUv(o.x, o.y); return { k: o.k, u, v, x: o.x, y: o.y }; }) }));
+    const span = tr => { const xs = tr.obs.map(o => o.x), ys = tr.obs.map(o => o.y); return Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)); };
+    const spans = T.map(span).sort((a, b) => a - b), medSpan = spans[spans.length >> 1] || 0;
+    if (medSpan > 15) T = T.filter(tr => span(tr) > 2);
+    const pxErr = (cm, X, o) => { const p = cm.project(X); return p ? Math.hypot((p[0] - o.u) * Wd / 2, (p[1] - o.v) * Hd / 2) : 1e9; };
+    const angleOf = (X, obs) => { let mx = 0; const dirs = obs.map(o => { const c = cams[o.k].C; const d = [X[0] - c[0], X[1] - c[1], X[2] - c[2]]; const l = Math.hypot(...d); return d.map(x => x / l); }); for (let a = 0; a < dirs.length; a++) for (let b = a + 1; b < dirs.length; b++) mx = Math.max(mx, Math.acos(clamp(dirs[a][0] * dirs[b][0] + dirs[a][1] * dirs[b][1] + dirs[a][2] * dirs[b][2], -1, 1))); return mx * R2D; };
+    const priorSig = [0.4 * D2R, 0.4 * D2R, 0.4 * D2R, 0.03];
+    let pts = [];
+    for (let round = 0; round < 7; round++) {
+      if (job.cancel) throw new Error('cancelled');
+      // triangulate with outlier rejection
+      pts = [];
+      for (const tr of T) {
+        let obs = tr.obs; if (obs.length < CFG.sfmMinViews) continue;
+        let X = sfmTriangulate(obs, cams); if (!X) continue;
+        let errs = obs.map(o => pxErr(cams[o.k], X, o));
+        const lim = round < 2 ? 12 : Math.max(2.5, CFG.sfmMaxErr * 2);
+        if (errs.some(e => e > lim)) { obs = obs.filter((o, i) => errs[i] <= lim); if (obs.length < CFG.sfmMinViews) continue; X = sfmTriangulate(obs, cams); if (!X) continue; errs = obs.map(o => pxErr(cams[o.k], X, o)); }
+        const rms = Math.sqrt(errs.reduce((a, e) => a + e * e, 0) / errs.length), ang = angleOf(X, obs);
+        pts.push({ X, obs, rms, ang, col: tr.col });
+      }
+      if (round === 0 || round === 6) SFM['dbg' + round] = { tracks: T.length, pts: pts.length, rms: pts.map(p => p.rms).sort((a, b) => a - b).filter((x, i, A) => i % Math.max(1, A.length >> 4) === 0).map(x => +x.toFixed(2)), ang: pts.map(p => p.ang).sort((a, b) => a - b).filter((x, i, A) => i % Math.max(1, A.length >> 4) === 0).map(x => +x.toFixed(2)), views: T.map(t => t.obs.length).sort((a, b) => a - b).filter((x, i, A) => i % Math.max(1, A.length >> 4) === 0), medSpan };
+      if (round === 6) break;
+      if (!CFG.sfmBA) continue;
+      // per-keyframe pose refinement (pointing + FOV) against the well-conditioned points
+      const good = pts.filter(p => p.ang >= CFG.sfmMinAng && p.rms < 4);
+      const byK = kfs.map(() => []); for (const p of good) for (const o of p.obs) byK[o.k].push([p.X, o]);
+      for (let k = 0; k < kfs.length; k++) {
+        if (!kfs[k].cam || byK[k].length < 8) continue;
+        let x = corr[k].slice();
+        const res = xx => { const cm = F.cam(kfs[k].cam, xx), r = []; for (const [X, o] of byK[k]) { const p = cm.project(X); if (!p) { r.push(50, 50); continue; } let ex = (p[0] - o.u) * Wd / 2, ey = (p[1] - o.v) * Hd / 2; const e = Math.hypot(ex, ey); if (e > 3) { const s = Math.sqrt(3 / e); ex *= s; ey *= s; } r.push(ex, ey); } for (let j = 0; j < 4; j++) r.push(xx[j] / priorSig[j] * 0.5); return r; };
+        for (let it = 0; it < 4; it++) {
+          const r0 = res(x), J = [0, 1, 2, 3].map(j => { const xp = x.slice(); const hh = j < 3 ? 1e-5 : 1e-4; xp[j] += hh; return res(xp).map((v, i) => (v - r0[i]) / hh); });
+          const A = [0, 1, 2, 3].map(a => [0, 1, 2, 3].map(b => J[a].reduce((s, v, i) => s + v * J[b][i], 0) + (a === b ? 1e-6 : 0))), g = [0, 1, 2, 3].map(a => -J[a].reduce((s, v, i) => s + v * r0[i], 0));
+          const dx = solve4(A, g); if (!dx) break; x = x.map((v, i) => v + dx[i]); if (Math.hypot(...dx) < 1e-7) break;
+        }
+        corr[k] = x;
+      }
+      cams = kfs.map((k, i) => k.cam ? F.cam(k.cam, corr[i]) : null);
+      job.p = (round + 1) / 7; buildSfmPane(); await new Promise(r => setTimeout(r));
+    }
+    const fin = pts.filter(p => p.ang >= CFG.sfmMinAng && p.rms <= CFG.sfmMaxErr && p.obs.length >= CFG.sfmMinViews);
+    let dense = [];
+    if (CFG.sfmDense && fin.length >= 20) { job.stage = 'dense matching'; job.p = 0; buildSfmPane(); await new Promise(r => setTimeout(r)); dense = await sfmDensify(kfs, cams, fin, Wd, Hd, job); }
+    const out = fin.map(p => { const g = F.toLLH(...p.X); return { lat: g.lat, lon: g.lon, h: p.X[2], N: p.X[0], E: p.X[1], col: p.col.map(c => Math.round(c)), views: p.obs.length, rms: p.rms, ang: p.ang, kind: 's' }; })
+      .concat(dense.map(p => { const g = F.toLLH(...p.X); return { lat: g.lat, lon: g.lon, h: p.X[2], N: p.X[0], E: p.X[1], col: p.col, views: 3, rms: 0, ang: p.ang, ncc: p.ncc, kind: 'd' }; }));
+    const cr = corr.filter((c, i) => kfs[i].cam);
+    SFM.res = {
+      when: new Date().toISOString(), t0, t1, origin: F.o, keyframes: kfs.length, tracks: tracks.length, pts: out, nSparse: fin.length, nDense: dense.length,
+      cams: kfs.filter(k => k.cam).map((k, i) => { const c = F.cam(k.cam, corr[i]); return { t: k.t, N: c.C[0], E: c.C[1], U: c.C[2] }; }),
+      corrRms: { rot: Math.sqrt(cr.reduce((a, c) => a + c[0] ** 2 + c[1] ** 2 + c[2] ** 2, 0) / Math.max(1, cr.length * 3)) * R2D, fov: Math.sqrt(cr.reduce((a, c) => a + c[3] ** 2, 0) / Math.max(1, cr.length)) * 100 },
+      rms: fin.length ? Math.sqrt(fin.reduce((a, p) => a + p.rms ** 2, 0) / fin.length) : null, angMed: fin.length ? fin.map(p => p.ang).sort((a, b) => a - b)[fin.length >> 1] : null,
+    };
+    status('Point cloud: ' + out.length + ' points from ' + kfs.length + ' keyframes (' + tcOf(t0) + '–' + tcOf(t1) + '), reprojection ' + fx(SFM.res.rms, 2) + ' px');
+    if (SFM.view) sfmViewUpdate();
+  } catch (e) { status('3-D: ' + e.message, e.message === 'cancelled' ? '' : 'badc'); console.warn(e); }
+  SFM.job = null; buildSfmPane(); dirty();
+}
+
+/* ---------- dense matching (plane sweep along each pixel's ray, NCC, third-view check) ---------- */
+async function sfmDensify(kfs, cams, sparse, W, H, job) {
+  const hs = sparse.map(p => p.X[2]).sort((a, b) => a - b), hLo = hs[Math.floor(hs.length * 0.02)] - 15, hHi = hs[Math.floor(hs.length * 0.98)] + 15;
+  const ctr = [sparse.reduce((a, p) => a + p.X[0], 0) / sparse.length, sparse.reduce((a, p) => a + p.X[1], 0) / sparse.length, hs[hs.length >> 1]];
+  const angBetween = (a, b) => { const u = [cams[a].C[0] - ctr[0], cams[a].C[1] - ctr[1], cams[a].C[2] - ctr[2]], v = [cams[b].C[0] - ctr[0], cams[b].C[1] - ctr[1], cams[b].C[2] - ctr[2]]; return Math.acos(clamp((u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / Math.hypot(...u) / Math.hypot(...v), -1, 1)) * R2D; };
+  const valid = kfs.map((k, i) => !!cams[i] && k.g8);
+  let d = 1; while (d < kfs.length - 1 && angBetween(0, d) < 5) d++;   // partner offset giving about 5°+ of parallax
+  if (d >= kfs.length) return [];
+  const refs = []; for (let k = d; k < kfs.length - d; k += Math.max(1, Math.round(d / 2))) if (valid[k] && valid[k + d] && valid[k - d]) refs.push(k);
+  const R = 3, NS = 64, step = CFG.sfmDenseStep, out = [];
+  const pix = (g, x, y) => { if (x < 0 || y < 0 || x > W - 1.001 || y > H - 1.001) return NaN; const xi = x | 0, yi = y | 0, fx = x - xi, fy = y - yi, k = yi * W + xi; return (g[k] * (1 - fx) + g[k + 1] * fx) * (1 - fy) + (g[k + W] * (1 - fx) + g[k + W + 1] * fx) * fy; };
+  const toPx = uv => [(uv[0] + 1) / 2 * W - 0.5, (uv[1] + 1) / 2 * H - 0.5];
+  const patchN = R * 2 + 1, n = patchN * patchN, A = new Float32Array(n), B = new Float32Array(n);
+  const ncc = (g, x, y) => { let sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0, q = 0; for (let j = -R; j <= R; j++) for (let i = -R; i <= R; i++, q++) { const b = pix(g, x + i, y + j); if (b !== b) return -2; const a = A[q]; sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b; } const va = saa - sa * sa / n, vb = sbb - sb * sb / n; return va > 1 && vb > 1 ? (sab - sa * sb / n) / Math.sqrt(va * vb) : -2; };
+  for (let ri = 0; ri < refs.length; ri++) {
+    if (job.cancel) break;
+    const k = refs[ri], cr = cams[k], cp = cams[k + d], cq = cams[k - d], g0 = kfs[k].g8, gp = kfs[k + d].g8, gq = kfs[k - d].g8, rgb = kfs[k].rgb;
+    for (let y = R + 2; y < H - R - 2; y += step) {
+      for (let x = R + 2; x < W - R - 2; x += step) {
+        let s = 0, ss = 0, q = 0; for (let j = -R; j <= R; j++) for (let i = -R; i <= R; i++, q++) { const v = g0[(y + j) * W + x + i]; A[q] = v; s += v; ss += v * v; }
+        if (ss / n - (s / n) ** 2 < 25) continue; // too little texture to match
+        const u = (x + 0.5) / W * 2 - 1, v = (y + 0.5) / H * 2 - 1, dr = cr.ray(u, v); if (dr[2] <= 0.02) continue;
+        const r0 = (cr.C[2] - hHi) / dr[2], r1 = (cr.C[2] - hLo) / dr[2];
+        let best = -2, bi = -1, second = -2; const sc = new Float32Array(NS);
+        for (let si = 0; si < NS; si++) { const r = r0 + (r1 - r0) * si / (NS - 1), X = cr.at(dr, r), pr = cp.project(X); if (!pr) { sc[si] = -2; continue; } const [px, py] = toPx(pr); const c = ncc(gp, px, py); sc[si] = c; if (c > best) { best = c; bi = si; } }
+        if (best < 0.85 || bi <= 0 || bi >= NS - 1) continue;
+        for (let si = 0; si < NS; si++) if (Math.abs(si - bi) > 2 && sc[si] > second) second = sc[si];
+        if (second > best - 0.08) continue; // ambiguous (repetitive texture)
+        const a = sc[bi - 1], b = sc[bi], c = sc[bi + 1], off = (a - c) / (2 * (a - 2 * b + c) || 1), r = r0 + (r1 - r0) * (bi + clamp(off, -0.5, 0.5)) / (NS - 1), X = cr.at(dr, r);
+        const pq = cq.project(X); if (!pq) continue; const [qx, qy] = toPx(pq); const c3 = ncc(gq, qx, qy); if (c3 < 0.75) continue; // must also match a third view
+        const o = (y * W + x) * 3; out.push({ X, col: [rgb[o], rgb[o + 1], rgb[o + 2]], ncc: Math.min(best, c3), ang: angBetween(k - d, k + d) });
+      }
+      if ((y & 15) === 0) { job.p = (ri + y / H) / refs.length; buildSfmPane(); await new Promise(rs => setTimeout(rs)); }
+    }
+  }
+  return out;
+}
+
+/* ---------- elevation grid from the cloud ---------- */
+function sfmGrid(cellM) {
+  const R = SFM.res; if (!R || R.pts.length < 20) return null;
+  const P = R.pts, lat0 = R.origin.lat, mLat = mpdLat(lat0), mLon = mpdLon(lat0);
+  if (!cellM) { const xs = P.map(p => p.E), ys = P.map(p => p.N), area = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys)); cellM = clamp(Math.sqrt(area / P.length) * 2, 1, 50); }
+  const cell = cellM / mLat; // degrees (square in latitude degrees; DEM grids are geographic)
+  const la = P.map(p => p.lat), lo = P.map(p => p.lon), x0 = Math.min(...lo) - cell, y0 = Math.min(...la) - cell, nc = Math.ceil((Math.max(...lo) - x0) / cell) + 2, nr = Math.ceil((Math.max(...la) - y0) / cell) + 2;
+  if (nc * nr > 4e6) return null;
+  const bins = new Map(); for (const p of P) { const c = Math.floor((p.lon - x0) / cell), r = nr - 1 - Math.floor((p.lat - y0) / cell), k = r * nc + c; (bins.get(k) || bins.set(k, []).get(k)).push(p.h); }
+  const data = new Float32Array(nc * nr).fill(-9999); for (const [k, v] of bins) { v.sort((a, b) => a - b); data[k] = v[v.length >> 1]; }
+  for (let pass = 0; pass < 2; pass++) { const d2 = data.slice(); for (let r = 1; r < nr - 1; r++) for (let c = 1; c < nc - 1; c++) { const k = r * nc + c; if (data[k] !== -9999) continue; let s = 0, m = 0; for (const q of [k - 1, k + 1, k - nc, k + nc, k - nc - 1, k - nc + 1, k + nc - 1, k + nc + 1]) if (data[q] !== -9999) { s += data[q]; m++; } if (m >= 3) d2[k] = s / m; } data.set(d2); }
+  return { x0, y0, cell, nc, nr, data, cellM };
+}
+function sfmGridASC(g) {
+  const rows = []; for (let r = 0; r < g.nr; r++) { const a = []; for (let c = 0; c < g.nc; c++) a.push(g.data[r * g.nc + c] === -9999 ? -9999 : +g.data[r * g.nc + c].toFixed(2)); rows.push(a.join(' ')); }
+  return 'ncols ' + g.nc + '\nnrows ' + g.nr + '\nxllcorner ' + g.x0.toFixed(9) + '\nyllcorner ' + g.y0.toFixed(9) + '\ncellsize ' + g.cell.toFixed(10) + '\nNODATA_value -9999\n' + rows.join('\n') + '\n';
+}
+function sfmUseAsDEM() {
+  const g = sfmGrid(); if (!g) { status('Not enough points for an elevation grid', 'badc'); return; }
+  DEM.parseASC(sfmGridASC(g)); CFG.demMode = 'asc'; DEM.reset(); S.orthoCache = null; computeDerived();
+  if (typeof OBJ !== 'undefined') { for (const o of OBJ.list) for (const sm of o.samples) if (sm.c) sm.g = groundOf(sm.t, sm.c); _objPolyCache.clear(); }
+  if (typeof buildSetPane === 'function') buildSetPane();
+  status('Elevation model from the point cloud: ' + g.nc + '×' + g.nr + ' cells of ' + g.cellM.toFixed(1) + ' m (outside it, rays use the frame-centre elevation)'); dirty();
+}
+/* ---------- exports ---------- */
+function sfmExport(kind) {
+  const R = SFM.res; if (!R) return; const base = (S.name || 'misb').replace(/\.[^.]+$/, '') + '_cloud';
+  const P = R.pts, h0 = R.origin.h0 ?? 0;
+  if (kind === 'ply') {
+    const hdr = ['ply', 'format ascii 1.0', 'comment MIViewer point cloud from ' + S.name + ' ' + tcOf(R.t0) + '-' + tcOf(R.t1), 'comment local ENU metres: x=east, y=north, z=height MSL; origin lat ' + R.origin.lat.toFixed(8) + ' lon ' + R.origin.lon.toFixed(8), 'element vertex ' + P.length, 'property float x', 'property float y', 'property float z', 'property uchar red', 'property uchar green', 'property uchar blue', 'end_header'];
+    return download(base + '.ply', hdr.join('\n') + '\n' + P.map(p => p.E.toFixed(3) + ' ' + p.N.toFixed(3) + ' ' + (p.h - h0).toFixed(3) + ' ' + p.col.join(' ')).join('\n') + '\n', 'text/plain');
+  }
+  if (kind === 'csv') return download(base + '.csv', 'lat,lon,h_msl,r,g,b,views,reproj_px,angle_deg\n' + P.map(p => [p.lat.toFixed(8), p.lon.toFixed(8), p.h.toFixed(2), ...p.col, p.views, p.rms.toFixed(2), p.ang.toFixed(1)].join(',')).join('\n'), 'text/csv');
+  if (kind === 'asc') { const g = sfmGrid(); if (g) download(base + '_dem.asc', sfmGridASC(g), 'text/plain'); }
+}
+
+/* ---------- map overlay ---------- */
+function sfmHeightCol(h, lo, hi) { const f = clamp((h - lo) / Math.max(1, hi - lo), 0, 1), stops = [[0, [43, 92, 171]], [0.35, [64, 170, 160]], [0.65, [226, 200, 82]], [1, [214, 82, 60]]]; let i = 0; while (i < stops.length - 2 && f > stops[i + 1][0]) i++; const [fa, ca] = stops[i], [fb, cb] = stops[i + 1], g = (f - fa) / (fb - fa); return ca.map((c, j) => Math.round(c + (cb[j] - c) * g)); }
+function sfmDrawMap(g) {
+  const R = SFM.res; if (!R || !CFG.sfmMap || !R.pts.length) return;
+  const hs = R.pts.map(p => p.h).sort((a, b) => a - b), lo = hs[Math.floor(hs.length * 0.02)], hi = hs[Math.floor(hs.length * 0.98)];
+  const stp = Math.max(1, Math.floor(R.pts.length / 20000));
+  for (let i = 0; i < R.pts.length; i += stp) { const p = R.pts[i], [x, y] = MapV.toScr(p.lat, p.lon), c = CFG.sfmColor === 'rgb' ? p.col : sfmHeightCol(p.h, lo, hi); g.fillStyle = 'rgb(' + c.join(',') + ')'; g.fillRect(x - 1, y - 1, 2.5, 2.5); }
+}
+
+/* ---------- 3-D viewer (WebGL) ---------- */
+function sfmOpenView() {
+  if (!SFM.res) return;
+  let el = $('#sfm3d');
+  if (!el) {
+    el = h('div', { id: 'sfm3d' },
+      h('div', { class: 'row', style: 'gap:6px;padding:4px 6px;border-bottom:1px solid var(--line)' }, h('b', null, '3-D point cloud'), h('span', { id: 'sfmInfo', class: 'dim' }), h('span', { style: 'margin-left:auto' }),
+        h('select', { onchange: e => { CFG.sfmColor = e.target.value; sfmViewUpdate(); dirty(); } }, [['rgb', 'Image colour'], ['height', 'Height']].map(([v, l]) => h('option', { value: v, selected: CFG.sfmColor === v }, l))),
+        h('label', null, 'size ', h('input', { type: 'range', min: 1, max: 6, step: 0.5, value: CFG.sfmPtSize, oninput: e => { CFG.sfmPtSize = +e.target.value; sfmRender(); } })),
+        h('button', { onclick: () => { sfmViewReset(); sfmRender(); } }, 'Reset view'), h('button', { onclick: () => { el.style.display = 'none'; } }, '×')),
+      h('canvas', { id: 'sfmCv' }), h('div', { class: 'dim', style: 'position:absolute;left:8px;bottom:6px;font-size:11px' }, 'drag: orbit · shift/right-drag: pan · wheel: zoom · cameras shown as the flight path'));
+    $('#map').parentNode.append(el);
+    const cv = $('#sfmCv'); let d = null;
+    cv.addEventListener('contextmenu', e => e.preventDefault());
+    cv.addEventListener('pointerdown', e => { d = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2 }; cv.setPointerCapture(e.pointerId); });
+    cv.addEventListener('pointermove', e => { if (!d) return; const dx = e.clientX - d.x, dy = e.clientY - d.y; d.x = e.clientX; d.y = e.clientY; const V = SFM.view; if (d.pan) { const s = V.dist * 0.0015, cy = Math.cos(V.yaw), sy = Math.sin(V.yaw); V.tgt[0] -= (dx * cy + dy * sy * Math.sin(V.pitch)) * s; V.tgt[1] += (dx * sy - dy * cy * Math.sin(V.pitch)) * s; } else { V.yaw -= dx * 0.006; V.pitch = clamp(V.pitch + dy * 0.006, 0.05, 1.55); } sfmRender(); });
+    cv.addEventListener('pointerup', () => { d = null; });
+    cv.addEventListener('wheel', e => { e.preventDefault(); SFM.view.dist *= Math.exp(e.deltaY * 0.0012); sfmRender(); }, { passive: false });
+    new ResizeObserver(() => sfmRender()).observe(cv);
+  }
+  el.style.display = 'flex';
+  if (!SFM.view) { SFM.view = {}; sfmViewReset(); }
+  sfmViewUpdate();
+}
+function sfmViewReset() { const R = SFM.res, P = R.pts; const xs = P.map(p => p.E), ys = P.map(p => p.N); const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2, ext = Math.max(50, Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)); const hs = P.map(p => p.h).sort((a, b) => a - b); Object.assign(SFM.view, { tgt: [cx, cy, hs[hs.length >> 1]], dist: ext * 1.3, yaw: -0.6, pitch: 0.6 }); }
+function sfmViewUpdate() {
+  const R = SFM.res, cv = $('#sfmCv'); if (!R || !cv) return;
+  const gl = SFM.gl || (SFM.gl = cv.getContext('webgl', { antialias: true }));
+  if (!gl) { $('#sfmInfo').textContent = 'WebGL not available in this browser'; return; }
+  if (!SFM.prog) {
+    const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+    const p = gl.createProgram();
+    gl.attachShader(p, sh(gl.VERTEX_SHADER, 'attribute vec3 pos; attribute vec3 col; uniform mat4 M; uniform float sz; varying vec3 c; void main(){ gl_Position = M * vec4(pos,1.0); gl_PointSize = sz; c = col; }'));
+    gl.attachShader(p, sh(gl.FRAGMENT_SHADER, 'precision mediump float; varying vec3 c; void main(){ gl_FragColor = vec4(c,1.0); }'));
+    gl.linkProgram(p); SFM.prog = p; SFM.buf = gl.createBuffer(); SFM.cbuf = gl.createBuffer(); SFM.camBuf = gl.createBuffer(); SFM.camCol = gl.createBuffer();
+  }
+  const P = R.pts, hs = P.map(p => p.h).sort((a, b) => a - b), lo = hs[Math.floor(hs.length * 0.02)] ?? 0, hi = hs[Math.floor(hs.length * 0.98)] ?? 1;
+  const pos = new Float32Array(P.length * 3), col = new Float32Array(P.length * 3);
+  P.forEach((p, i) => { pos.set([p.E, p.N, p.h], i * 3); const c = CFG.sfmColor === 'rgb' ? p.col : sfmHeightCol(p.h, lo, hi); col.set([c[0] / 255, c[1] / 255, c[2] / 255], i * 3); });
+  gl.bindBuffer(gl.ARRAY_BUFFER, SFM.buf); gl.bufferData(gl.ARRAY_BUFFER, pos, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, SFM.cbuf); gl.bufferData(gl.ARRAY_BUFFER, col, gl.STATIC_DRAW);
+  const cp = new Float32Array(R.cams.length * 3), cc = new Float32Array(R.cams.length * 3); R.cams.forEach((c, i) => { cp.set([c.E, c.N, c.U], i * 3); cc.set([0.95, 0.83, 0.36], i * 3); });
+  gl.bindBuffer(gl.ARRAY_BUFFER, SFM.camBuf); gl.bufferData(gl.ARRAY_BUFFER, cp, gl.STATIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, SFM.camCol); gl.bufferData(gl.ARRAY_BUFFER, cc, gl.STATIC_DRAW);
+  SFM.n = P.length; SFM.nc = R.cams.length;
+  $('#sfmInfo').textContent = P.length.toLocaleString() + ' points · ' + R.keyframes + ' keyframes · ' + tcOf(R.t0) + '–' + tcOf(R.t1) + ' · reprojection ' + fx(R.rms, 2) + ' px';
+  sfmRender();
+}
+function sfmRender() {
+  const cv = $('#sfmCv'), gl = SFM.gl, V = SFM.view; if (!cv || !gl || !V || !SFM.prog) return;
+  const r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1; if (!r.width) return;
+  cv.width = r.width * dpr; cv.height = r.height * dpr; gl.viewport(0, 0, cv.width, cv.height);
+  gl.clearColor(0.06, 0.07, 0.08, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST);
+  // camera: orbit about tgt; world x=E, y=N, z=up
+  const ce = [V.tgt[0] + V.dist * Math.cos(V.pitch) * Math.sin(V.yaw), V.tgt[1] - V.dist * Math.cos(V.pitch) * Math.cos(V.yaw), V.tgt[2] + V.dist * Math.sin(V.pitch)];
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]], crs = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]], nz = a => { const l = Math.hypot(...a); return a.map(x => x / l); }, dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const f = nz(sub(V.tgt, ce)), s = nz(crs(f, [0, 0, 1])), u = crs(s, f);
+  const view = [s[0], u[0], -f[0], 0, s[1], u[1], -f[1], 0, s[2], u[2], -f[2], 0, -dot(s, ce), -dot(u, ce), dot(f, ce), 1];
+  const near = Math.max(0.5, V.dist / 500), far = V.dist * 50, fy = 1 / Math.tan(0.45), asp = cv.width / cv.height;
+  const proj = [fy / asp, 0, 0, 0, 0, fy, 0, 0, 0, 0, (far + near) / (near - far), -1, 0, 0, 2 * far * near / (near - far), 0];
+  const M = new Float32Array(16); for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) { let a = 0; for (let k = 0; k < 4; k++) a += proj[k * 4 + j] * view[i * 4 + k]; M[i * 4 + j] = a; }
+  gl.useProgram(SFM.prog);
+  gl.uniformMatrix4fv(gl.getUniformLocation(SFM.prog, 'M'), false, M);
+  const draw = (pb, cb, n, mode, sz) => { const lp = gl.getAttribLocation(SFM.prog, 'pos'), lc = gl.getAttribLocation(SFM.prog, 'col'); gl.bindBuffer(gl.ARRAY_BUFFER, pb); gl.enableVertexAttribArray(lp); gl.vertexAttribPointer(lp, 3, gl.FLOAT, false, 0, 0); gl.bindBuffer(gl.ARRAY_BUFFER, cb); gl.enableVertexAttribArray(lc); gl.vertexAttribPointer(lc, 3, gl.FLOAT, false, 0, 0); gl.uniform1f(gl.getUniformLocation(SFM.prog, 'sz'), sz * dpr); gl.drawArrays(mode, 0, n); };
+  draw(SFM.buf, SFM.cbuf, SFM.n, gl.POINTS, CFG.sfmPtSize);
+  if (SFM.nc > 1) { draw(SFM.camBuf, SFM.camCol, SFM.nc, gl.LINE_STRIP, 1); draw(SFM.camBuf, SFM.camCol, SFM.nc, gl.POINTS, 4); }
+}
+
+/* ---------- 3D pane ---------- */
+function buildSfmPane() {
+  const p = $('#p3d'); if (!p) return; p.innerHTML = '';
+  const J = SFM.job, R = SFM.res, clip = isNum(S.inT) && isNum(S.outT) && S.outT > S.inT;
+  p.append(h('h3', null, 'Point cloud from overlapping frames'),
+    h('div', { class: 'note' }, 'Follows ground features through the video, triangulates them from the camera positions in the metadata, and refines each keyframe\'s pointing and field of view so every point is consistent (a light bundle adjustment). Works best where the platform moves past or around the scene (an orbit or a pass) rather than hovering. Moving vehicles and burned-in symbology are rejected as outliers.'),
+    h('div', { class: 'muted' }, 'Range: ' + (clip ? 'clip ' + tcOf(S.inT) + ' → ' + tcOf(S.outT) : 'playhead ±8 s (set In/Out on the timeline to choose a range)')),
+    h('div', { class: 'grid2' },
+      h('label', null, 'Keyframe every s'), h('input', { type: 'number', step: 0.1, min: 0.1, value: CFG.sfmKf, onchange: e => { CFG.sfmKf = +e.target.value || 0.5; } }),
+      h('label', null, 'Features tracked'), h('input', { type: 'number', step: 50, min: 50, value: CFG.sfmPts, onchange: e => { CFG.sfmPts = +e.target.value || 500; } }),
+      h('label', null, 'Min views per point'), h('input', { type: 'number', step: 1, min: 2, value: CFG.sfmMinViews, onchange: e => { CFG.sfmMinViews = +e.target.value || 3; } }),
+      h('label', null, 'Min intersection angle °'), h('input', { type: 'number', step: 0.5, min: 0.5, value: CFG.sfmMinAng, onchange: e => { CFG.sfmMinAng = +e.target.value || 3; } }),
+      h('label', null, 'Dense matching'), h('input', { type: 'checkbox', checked: CFG.sfmDense, onchange: e => { CFG.sfmDense = e.target.checked; } }),
+      h('label', null, 'Max reprojection px'), h('input', { type: 'number', step: 0.25, min: 0.25, value: CFG.sfmMaxErr, onchange: e => { CFG.sfmMaxErr = +e.target.value || 1.5; } })),
+    h('div', { class: 'btns' },
+      J ? h('button', { onclick: () => { J.cancel = true; } }, '■ Cancel') : h('button', { style: 'border-color:var(--acc);color:var(--acc)', disabled: !S.playable || !S.track, onclick: sfmBuild }, '▲ Build point cloud'),
+      R ? h('button', { onclick: sfmOpenView }, 'Open 3-D view') : ''),
+    J ? h('div', { class: 'note' }, ({ 'masking overlay': 'Finding burned-in symbology… ', tracking: 'Tracking features… ', triangulating: 'Triangulating and refining… ', 'dense matching': 'Dense matching… ' }[J.stage] || '') + Math.round(J.p * 100) + '%') : '');
+  if (!R) return;
+  const hs = R.pts.map(q => q.h).sort((a, b) => a - b);
+  p.append(h('table', null,
+    [['Points', R.pts.length.toLocaleString() + ' (' + (R.nSparse ?? R.pts.length).toLocaleString() + ' triangulated from ' + R.tracks.toLocaleString() + ' feature tracks + ' + (R.nDense || 0).toLocaleString() + ' dense-matched)'], ['Keyframes', R.keyframes + ' · ' + tcOf(R.t0) + ' → ' + tcOf(R.t1)], ['Reprojection', fx(R.rms, 2) + ' px RMS'], ['Intersection angle', 'median ' + fx(R.angMed, 1) + '°'],
+      ['Height range', hs.length ? fx(hs[Math.floor(hs.length * 0.02)], 0) + ' … ' + fx(hs[Math.floor(hs.length * 0.98)], 0) + ' m MSL' : '–'], ['Pose refinement', 'pointing ' + fx(R.corrRms.rot, 3) + '° RMS · FOV ' + fx(R.corrRms.fov, 2) + '% RMS']].map(([k, v]) => h('tr', null, h('td', { class: 'k' }, k), h('td', null, v)))),
+    h('label', { class: 'row', style: 'gap:6px;margin:6px 0' }, h('input', { type: 'checkbox', checked: CFG.sfmMap, onchange: e => { CFG.sfmMap = e.target.checked; dirty(); } }), 'Show on map',
+      h('select', { onchange: e => { CFG.sfmColor = e.target.value; dirty(); if (SFM.view) sfmViewUpdate(); } }, [['rgb', 'image colour'], ['height', 'height colour']].map(([v, l]) => h('option', { value: v, selected: CFG.sfmColor === v }, l)))),
+    h('div', { class: 'btns' }, h('button', { onclick: sfmUseAsDEM, title: 'Grid the cloud into an elevation model and use it for footprints, picks, objects and the pseudo-ortho' }, 'Use as elevation model'),
+      h('button', { onclick: () => sfmExport('ply') }, 'PLY'), h('button', { onclick: () => sfmExport('csv') }, 'CSV'), h('button', { onclick: () => sfmExport('asc') }, 'Grid (ASC)'),
+      h('button', { onclick: () => { SFM.res = null; if ($('#sfm3d')) $('#sfm3d').style.display = 'none'; buildSfmPane(); dirty(); } }, 'Clear')),
+    h('div', { class: 'dim' }, 'Heights are metres above mean sea level from the sensor model; absolute accuracy follows the metadata (and any calibration lines), relative shape comes from the triangulation.'));
 }
 
 /* =====================================================================
@@ -4924,7 +5321,7 @@ function init() {
     }
     origDraw();
   };
-  buildSetPane(); buildSearchPane(); buildExportPane(); buildMarksPane(); buildObjPane(); buildCalPane();
+  buildSetPane(); buildSearchPane(); buildExportPane(); buildMarksPane(); buildObjPane(); buildCalPane(); buildSfmPane();
   requestAnimationFrame(loop);
 }
 init();
