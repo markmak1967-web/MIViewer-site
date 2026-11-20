@@ -53,6 +53,10 @@ body.dragover #mapWrap{outline:2px dashed var(--acc);outline-offset:-6px}
 #vidWrap{position:relative;height:100%;aspect-ratio:var(--vidAR,16/9);background:#000;overflow:hidden}
 #vid{width:100%;height:100%;display:block;object-fit:fill}
 #vidOv{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}
+#vid{transform-origin:50% 50%}
+#vz{position:absolute;right:6px;top:6px;display:flex;gap:2px;align-items:center;background:rgba(0,0,0,.55);padding:2px 3px;border-radius:3px;z-index:2}
+#vz button{padding:1px 7px;min-width:0}
+#vz span{color:var(--fg);padding:0 4px;min-width:38px;text-align:center}
 #vidMsg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--mu);text-align:center;padding:20px;pointer-events:none}
 #ctrl{display:flex;flex-direction:column;gap:6px;padding:8px 10px;min-width:0;overflow:auto}
 .row{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
@@ -145,7 +149,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
   </div>
   <div id="split" title="Drag to resize"></div>
   <div id="bottom">
-    <div id="vidWrap"><video id="vid" muted playsinline preload="auto"></video><canvas id="vidOv"></canvas><div id="vidMsg">No video loaded</div></div>
+    <div id="vidWrap"><video id="vid" muted playsinline preload="auto"></video><canvas id="vidOv"></canvas><div id="vidMsg">No video loaded</div><div id="vz"><button id="vzOut" title="Zoom out of the frame">−</button><span id="vzLvl">1.0×</span><button id="vzIn" title="Zoom into the frame (or mouse wheel over the video)">+</button><button id="vzFit" title="Whole frame (0)">Fit</button><button id="vzFol" title="Keep the selected object centred while zoomed">⌖ Follow</button></div></div>
     <div id="ctrl">
       <div class="row"><span class="tc" id="tc" title="SMPTE timecode (media time)">--:--:--:--</span><span id="shut" class="accc"></span><span class="muted" id="fr">frame – / –</span></div>
       <div class="row muted" id="utc" title="UTC from metadata">UTC –</div>
@@ -202,7 +206,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.4.3', build: 9 };
+const BUILD = { ver: 'R0.5.0', build: 10 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -1591,7 +1595,7 @@ function finishLoad() {
   DEM.reset(); preloadDEM();
   if (S.bbox) MapV.fit(S.bbox);
   buildFilePane(); buildMetaPane(); buildSearchPane(); buildExportPane();
-  TL.v0 = TL.v1 = 0; thumbsReset(); loadMarks(S.libMarks); loadObjects();
+  TL.v0 = TL.v1 = 0; thumbsReset(); loadMarks(S.libMarks); loadObjects(); vzReset();
   seek(S.frames.length ? S.frames[0] : 0);
   dirty();
 }
@@ -1691,7 +1695,7 @@ function loop(now) {
   if (P.playing && S.outT !== null && $('#cLoop').checked && t >= S.outT) { seek(S.inT ?? 0); t = P.time(); }
   if (t !== _lastT || _dirty) {
     _lastT = t; _dirty = false;
-    updateCurrent(t);
+    updateCurrent(t); vzFollowTick();
     updateHud(t); drawVidOverlay(); drawTimeline(); MapV.render();
     if (now - _lastMeta > 120) { _lastMeta = now; updateMetaPane(t); }
   }
@@ -1824,6 +1828,32 @@ function tri(g, img, s0, s1, s2, d0, d1, d2) {
    VIDEO OVERLAY (AOI reprojection, pick)
    ===================================================================== */
 const vo = $('#vidOv'), vg = vo.getContext('2d');
+/* in-frame zoom: VZ.z magnification, (VZ.u, VZ.v) = frame point (normalised -1..1) at the view centre.
+   The video element is CSS-transformed; overlays map through vzToPx / vzUV so drawing and picking stay exact. */
+const VZ = { z: 1, u: 0, v: 0, follow: false, max: 16 };
+function vzClamp() { VZ.z = clamp(VZ.z, 1, VZ.max); const m = 1 - 1 / VZ.z; VZ.u = clamp(VZ.u, -m, m); VZ.v = clamp(VZ.v, -m, m); }
+function vzApply() { vzClamp(); vid.style.transform = VZ.z > 1 ? 'scale(' + VZ.z + ') translate(' + (-VZ.u * 50) + '%,' + (-VZ.v * 50) + '%)' : ''; const l = $('#vzLvl'); if (l) l.textContent = VZ.z.toFixed(VZ.z < 10 ? 1 : 0) + '×'; const f = $('#vzFol'); if (f) f.classList.toggle('on', VZ.follow); dirty(); }
+const vzToPx = (uv, W, H) => [((uv[0] - VZ.u) * VZ.z + 1) / 2 * W, ((uv[1] - VZ.v) * VZ.z + 1) / 2 * H];
+function vzUV(e) { const r = vo.getBoundingClientRect(); return [((e.clientX - r.left) / r.width * 2 - 1) / VZ.z + VZ.u, ((e.clientY - r.top) / r.height * 2 - 1) / VZ.z + VZ.v]; }
+function vzZoomAt(f, e) { // keep the frame point under the cursor fixed
+  const r = vo.getBoundingClientRect(), nx = e ? (e.clientX - r.left) / r.width * 2 - 1 : 0, ny = e ? (e.clientY - r.top) / r.height * 2 - 1 : 0;
+  const pu = nx / VZ.z + VZ.u, pv = ny / VZ.z + VZ.v; VZ.z = clamp(VZ.z * f, 1, VZ.max); VZ.u = pu - nx / VZ.z; VZ.v = pv - ny / VZ.z; vzApply();
+}
+function vzReset() { VZ.z = 1; VZ.u = VZ.v = 0; vzApply(); }
+function vzFollowTick() {
+  if (!VZ.follow || VZ.z <= 1 || typeof OBJ === 'undefined' || !OBJ.sel) return;
+  const o = OBJ.list.find(x => x.id === OBJ.sel), s = o && objAt(o, P.time()); if (!s) return;
+  const nu = s.c[0], nv = s.c[1]; if (Math.abs(nu - VZ.u) + Math.abs(nv - VZ.v) > 1e-4) { VZ.u = nu; VZ.v = nv; vzApply(); }
+}
+vo.addEventListener('wheel', e => { if (!S.dur) return; e.preventDefault(); vzZoomAt(Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0015)), e); }, { passive: false });
+(() => { // drag to pan when zoomed (not while drawing an outline); middle button always pans
+  let d = null;
+  vo.addEventListener('pointerdown', e => { if ((OBJ.drawing && e.button !== 1) || VZ.z <= 1) return; d = { x: e.clientX, y: e.clientY, u: VZ.u, v: VZ.v, moved: false }; vo.setPointerCapture(e.pointerId); });
+  vo.addEventListener('pointermove', e => { if (!d) return; const r = vo.getBoundingClientRect(), dx = e.clientX - d.x, dy = e.clientY - d.y; if (Math.abs(dx) + Math.abs(dy) > 4) d.moved = true; if (!d.moved) return; VZ.follow = false; VZ.u = d.u - dx / r.width * 2 / VZ.z; VZ.v = d.v - dy / r.height * 2 / VZ.z; vzApply(); vo.style.cursor = 'grabbing'; });
+  vo.addEventListener('pointerup', () => { if (d && d.moved) VZ.dragged = performance.now(); d = null; vo.style.cursor = OBJ.drawing ? 'crosshair' : ''; });
+})();
+$('#vzIn').onclick = () => vzZoomAt(1.5); $('#vzOut').onclick = () => vzZoomAt(1 / 1.5); $('#vzFit').onclick = vzReset;
+$('#vzFol').onclick = () => { VZ.follow = !VZ.follow; if (VZ.follow && VZ.z <= 1) VZ.z = 3; if (VZ.follow && !OBJ.sel) status('Select an object (click its outline) for ⌖ Follow to centre on it'); vzApply(); vzFollowTick(); };
 function drawVidOverlay() {
   const r = vo.getBoundingClientRect(), d = window.devicePixelRatio || 1;
   if (vo.width !== Math.round(r.width * d)) { vo.width = Math.round(r.width * d); vo.height = Math.round(r.height * d); }
@@ -1833,7 +1863,7 @@ function drawVidOverlay() {
   vg.beginPath(); vg.moveTo(W / 2 - 12, H / 2); vg.lineTo(W / 2 - 4, H / 2); vg.moveTo(W / 2 + 4, H / 2); vg.lineTo(W / 2 + 12, H / 2); vg.moveTo(W / 2, H / 2 - 12); vg.lineTo(W / 2, H / 2 - 4); vg.moveTo(W / 2, H / 2 + 4); vg.lineTo(W / 2, H / 2 + 12); vg.stroke();
   if (typeof drawObjectsVideo === 'function') { vg.save(); drawObjectsVideo(vg, W, H); vg.restore(); }
   if (!cur || !cur.proj) return;
-  const toPx = uv => [(uv[0] + 1) / 2 * W, (uv[1] + 1) / 2 * H];
+  const toPx = uv => vzToPx(uv, W, H);
   if (S.aoi.length && S.aoiDone) {
     const pts = S.aoi.map(p => cur.proj.toImage(p[0], p[1], groundElev(p[0], p[1], cur.st)));
     if (pts.every(Boolean)) {
@@ -1853,10 +1883,10 @@ function drawVidOverlay() {
   vg.fillText([fmtUTC(cur.st.ts), g && isNum(g.niirs) ? 'NIIRS≈' + g.niirs.toFixed(1) : '', g && isNum(g.gsd) ? 'GSD ' + g.gsd.toFixed(2) + ' m' : '', cur.aoi ? 'AOI ' + Math.round(cur.aoi.cov * 100) + '% in frame' : ''].filter(Boolean).join('   '), 6, H - 5);
 }
 vo.addEventListener('click', e => {
-  if (OBJ.drawing || performance.now() - (OBJ.lastTag || 0) < 400) return;
-  { const r = vo.getBoundingClientRect(), o = hitObject((e.clientX - r.left) / r.width * 2 - 1, (e.clientY - r.top) / r.height * 2 - 1); if (o) { OBJ.sel = o.id; document.querySelector('[data-p=pObjects]').click(); buildObjPane(); status(o.code + (o.label ? ' ' + o.label : '') + ' selected — Delete key removes it; “＋ Add outline” adds a new outline'); dirty(); return; } }
+  if (OBJ.drawing || performance.now() - (OBJ.lastTag || 0) < 400 || performance.now() - (VZ.dragged || 0) < 300) return;
+  { const [hu, hv] = vzUV(e), o = hitObject(hu, hv); if (o) { OBJ.sel = o.id; document.querySelector('[data-p=pObjects]').click(); buildObjPane(); status(o.code + (o.label ? ' ' + o.label : '') + ' selected — Delete key removes it; “＋ Add outline” adds a new outline'); dirty(); return; } }
   const cur = S.cur; if (!cur || !cur.proj) return;
-  const r = vo.getBoundingClientRect(), u = (e.clientX - r.left) / r.width * 2 - 1, v = (e.clientY - r.top) / r.height * 2 - 1;
+  const [u, v] = vzUV(e);
   const g = cur.proj.toGround(u, v);
   if (g.horizon) { status('Pick: ray does not intersect ground within ' + CFG.maxRange / 1000 + ' km'); return; }
   S.pick = { ...g, t: cur.t, u, v };
@@ -2513,6 +2543,7 @@ function installKeys() {
     else if (k === 'Escape' && OBJ.drawing) cancelTag();
     else if (k === 'Escape' && OBJ.job) OBJ.job.cancel = true;
     else if ((k === 't' || k === 'T') && !OBJ.drawing) startTag();
+    else if (k === '0') vzReset();
     else if ((k === 'Delete' || k === 'Backspace') && OBJ.sel && !OBJ.drawing) { OBJ.confirmDel = OBJ.sel; document.querySelector('[data-p=pObjects]').click(); buildObjPane(); }
     else if (k === 'Enter' && S.drawing) finishAOI();
     else if (k === 'Escape' && S.drawing) { S.aoi = []; finishAOI(); }
@@ -3110,7 +3141,7 @@ function buildLibUI() {
    window and three scales then finds the residual. Analyst keyframes bound
    tracker runs; redrawing at any frame corrects drift.
    ===================================================================== */
-Object.assign(CFG, { trackGate: 5, trackStep: 2, trackMinScore: 0.55, stopSpeed: 1.0, stopMin: 3, nearDist: 50 });
+Object.assign(CFG, { coastMax: 2.0, trackGate: 8, trackStep: 2, trackMinScore: 0.55, stopSpeed: 1.0, stopMin: 3, nearDist: 50 });
 const OBJ = { list: [], drawing: null, redraw: null, sel: null, job: null, confirmDel: null, palette: ['#6cc3ff', '#7fd18b', '#e37ad6', '#f2d45c', '#ff8a65', '#9fa8ff', '#4dd0c8', '#c5e17a'] };
 const CLASSES = ['vehicle', 'person', 'vessel', 'aircraft', 'structure', 'equipment', 'animal', 'other'];
 const uuid = () => (crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); });
@@ -3169,21 +3200,21 @@ function finishTag(poly) {
 }
 (() => {
   const vo = $('#vidOv'); let down = null;
-  const uvOf = e => { const r = vo.getBoundingClientRect(); return [(e.clientX - r.left) / r.width * 2 - 1, (e.clientY - r.top) / r.height * 2 - 1]; };
-  vo.addEventListener('pointerdown', e => { if (!OBJ.drawing) return; down = uvOf(e); OBJ.dragBox = null; vo.setPointerCapture(e.pointerId); });
-  vo.addEventListener('pointermove', e => { if (!OBJ.drawing) return; OBJ.hover = uvOf(e); if (down) { const p = OBJ.hover; if (Math.abs(p[0] - down[0]) + Math.abs(p[1] - down[1]) > 0.02) OBJ.dragBox = [down, p]; } dirty(); });
+  const uvOf = e => vzUV(e);
+  vo.addEventListener('pointerdown', e => { if (!OBJ.drawing || e.button === 1) return; down = uvOf(e); OBJ.dragBox = null; vo.setPointerCapture(e.pointerId); });
+  vo.addEventListener('pointermove', e => { if (!OBJ.drawing) return; OBJ.hover = uvOf(e); if (down) { const p = OBJ.hover; if (Math.abs(p[0] - down[0]) + Math.abs(p[1] - down[1]) > 0.02 / VZ.z) OBJ.dragBox = [down, p]; } dirty(); });
   vo.addEventListener('pointerup', e => {
     if (!OBJ.drawing) return;
     const p = uvOf(e);
     if (OBJ.dragBox && !OBJ.drawing.length) { const [a, b] = OBJ.dragBox; down = null; OBJ.dragBox = null; finishTag([[a[0], a[1]], [b[0], a[1]], [b[0], b[1]], [a[0], b[1]]]); return; }
     down = null; OBJ.dragBox = null; OBJ.drawing.push(p); dirty();
   });
-  vo.addEventListener('dblclick', e => { if (!OBJ.drawing) return; e.preventDefault(); const pts = OBJ.drawing; while (pts.length > 1 && Math.hypot(pts[pts.length - 1][0] - pts[pts.length - 2][0], pts[pts.length - 1][1] - pts[pts.length - 2][1]) < 0.01) pts.pop(); finishTag(pts); });
+  vo.addEventListener('dblclick', e => { if (!OBJ.drawing) return; e.preventDefault(); const pts = OBJ.drawing; while (pts.length > 1 && Math.hypot(pts[pts.length - 1][0] - pts[pts.length - 2][0], pts[pts.length - 1][1] - pts[pts.length - 2][1]) < 0.01 / VZ.z) pts.pop(); finishTag(pts); });
 })();
 
 /* ---------- drawing ---------- */
 function drawObjectsVideo(g, W, H) {
-  const toPx = uv => [(uv[0] + 1) / 2 * W, (uv[1] + 1) / 2 * H], t = P.time();
+  const toPx = uv => vzToPx(uv, W, H), t = P.time();
   for (const o of OBJ.list) {
     const s = objAt(o, t);
     if (!s) { // recently lost: show the last outline dashed with a prompt to redraw
@@ -3278,98 +3309,192 @@ const pxToUv = (p) => [p[0] / TRK.W * 2 - 1, p[1] / TRK.H * 2 - 1];
 const bboxPx = poly => { const P2 = poly.map(uvToPx), xs = P2.map(p => p[0]), ys = P2.map(p => p[1]); return [Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)]; };
 
 /* ---------- tracker (stepper: used by the Track buttons and by tracking through playback) ---------- */
+/* ---- image helpers: rotated sampling, luminance pyramid, global (camera) motion ---- */
+function sampleRot(G, W, H, cx, cy, ux, uy, rot, aw, ah) { // aw x ah cells of size ux,uy centred on (cx,cy), rotated by rot (rad); 3 planes
+  const out = new Float32Array(3 * aw * ah), co = Math.cos(rot), si = Math.sin(rot), n = aw * ah;
+  for (let j = 0; j < ah; j++) for (let i = 0; i < aw; i++) {
+    const lx = (i + 0.5 - aw / 2) * ux, ly = (j + 0.5 - ah / 2) * uy;
+    const x = clamp(cx + lx * co - ly * si - 0.5, 0, W - 1.001), y = clamp(cy + lx * si + ly * co - 0.5, 0, H - 1.001);
+    const xi = x | 0, yi = y | 0, fx = x - xi, fy = y - yi, k = yi * W + xi, w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy, o = j * aw + i;
+    for (let c = 0; c < 3; c++) { const P = G[c]; out[c * n + o] = P[k] * w00 + P[k + 1] * w10 + P[k + W] * w01 + P[k + W + 1] * w11; }
+  }
+  return out;
+}
+function lumDown(G, W, H, f) {
+  const w = Math.floor(W / f), h = Math.floor(H / f), L = new Float32Array(w * h), k2 = 1 / (f * f);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let s = 0; for (let j = 0; j < f; j++) { const r = (y * f + j) * W + x * f; for (let i = 0; i < f; i++) s += 0.299 * G[0][r + i] + 0.587 * G[1][r + i] + 0.114 * G[2][r + i]; } L[y * w + x] = s * k2; }
+  let m = 0; for (const v of L) m += v; m /= L.length; for (let i = 0; i < L.length; i++) L[i] -= m;
+  return { L, w, h, f };
+}
+function lumPyr(G) { return { q: lumDown(G, TRK.W, TRK.H, 4), h: lumDown(G, TRK.W, TRK.H, 2) }; }
+/* frame-to-frame camera motion from the background: coarse shift at 1/4 res, then a similarity
+   (scale, rotation, shift) fitted to a grid of patch shifts at 1/2 res, excluding the object itself */
+function globalMotion(A, B, excl) {
+  const a = A.q, b = B.q, R = 16, x0 = Math.round(a.w * 0.12), x1 = Math.round(a.w * 0.88), y0 = Math.round(a.h * 0.12), y1 = Math.round(a.h * 0.88);
+  const sad = (dx, dy) => { let e = 0, n = 0; for (let y = Math.max(y0, -dy); y < Math.min(y1, b.h - dy); y += 2) { const ra = y * a.w, rb = (y + dy) * b.w + dx; for (let x = Math.max(x0, -dx); x < Math.min(x1, b.w - dx); x += 2) { e += Math.abs(a.L[ra + x] - b.L[rb + x]); n++; } } return e / Math.max(1, n); };
+  let best = { e: Infinity, dx: 0, dy: 0 };
+  for (let dy = -R; dy <= R; dy += 2) for (let dx = -R; dx <= R; dx += 2) { const e = sad(dx, dy); if (e < best.e) best = { e, dx, dy }; }
+  { const c = best; for (let dy = c.dy - 1; dy <= c.dy + 1; dy++) for (let dx = c.dx - 1; dx <= c.dx + 1; dx++) { if (dx === c.dx && dy === c.dy) continue; const e = sad(dx, dy); if (e < best.e) best = { e, dx, dy }; } }
+  { const e0 = sad(0, 0); if (best.e > e0 * 0.92) best = { e: e0, dx: 0, dy: 0 }; } // barely better than 'camera still': treat as still
+  // fine: patch grid at half resolution
+  const h1 = A.h, h2 = B.h, P = 16, r = 3, pts = [], cx = h1.w / 2, cy = h1.h / 2;
+  const ex = excl ? excl.map(v => v / 2) : null; // [x,y,w,h] in half-res px
+  for (let gy = 0; gy < 4; gy++) for (let gx = 0; gx < 5; gx++) {
+    const px = Math.round((gx + 0.5) / 5 * h1.w - P / 2), py = Math.round((gy + 0.5) / 4 * h1.h - P / 2);
+    if (ex && px + P > ex[0] && px < ex[0] + ex[2] && py + P > ex[1] && py < ex[1] + ex[3]) continue;
+    let m = 0, v = 0; for (let j = 0; j < P; j++) for (let i = 0; i < P; i++) { const q = h1.L[(py + j) * h1.w + px + i]; m += q; v += q * q; }
+    m /= P * P; v = v / (P * P) - m * m; if (v < 9) continue; // too flat to register
+    const sd = Math.sqrt(v); let pb = { e: Infinity };
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      const qx = px + 2 * best.dx + dx, qy = py + 2 * best.dy + dy; if (qx < 0 || qy < 0 || qx + P >= h2.w || qy + P >= h2.h) continue;
+      let mb = 0; for (let j = 0; j < P; j++) for (let i = 0; i < P; i++) mb += h2.L[(qy + j) * h2.w + qx + i]; mb /= P * P;
+      let e = 0; for (let j = 0; j < P; j++) for (let i = 0; i < P; i++) e += Math.abs((h1.L[(py + j) * h1.w + px + i] - m) - (h2.L[(qy + j) * h2.w + qx + i] - mb));
+      if (e < pb.e) pb = { e, dx: 2 * best.dx + dx, dy: 2 * best.dy + dy };
+    }
+    if (pb.e < Infinity && pb.e / (P * P) < sd * 0.8) pts.push([px + P / 2 - cx, py + P / 2 - cy, pb.dx, pb.dy]);
+  }
+  const shift = { a: 1, b: 0, tx: best.dx * 4, ty: best.dy * 4, n: pts.length, weak: pts.length < 4 };
+  if (pts.length < 4) return shift;
+  const fit = Q => { // least squares x' = a x - b y + tx ; y' = b x + a y + ty
+    let n = Q.length, sx = 0, sy = 0, sxp = 0, syp = 0; for (const [x, y, dx, dy] of Q) { sx += x; sy += y; sxp += x + dx; syp += y + dy; }
+    const mx = sx / n, my = sy / n, mxp = sxp / n, myp = syp / n; let num1 = 0, num2 = 0, den = 0;
+    for (const [x, y, dx, dy] of Q) { const X = x - mx, Y = y - my, Xp = x + dx - mxp, Yp = y + dy - myp; num1 += X * Xp + Y * Yp; num2 += X * Yp - Y * Xp; den += X * X + Y * Y; }
+    const A2 = num1 / den, B2 = num2 / den; return { a: A2, b: B2, tx: mxp - (A2 * mx - B2 * my), ty: myp - (B2 * mx + A2 * my) };
+  };
+  let F = fit(pts);
+  const res = q => Math.hypot(F.a * q[0] - F.b * q[1] + F.tx - q[0] - q[2], F.b * q[0] + F.a * q[1] + F.ty - q[1] - q[3]);
+  const inl = pts.filter(q => res(q) < 1.5); if (inl.length >= 4) F = fit(inl);
+  if (Math.abs(Math.hypot(F.a, F.b) - 1) > 0.15) { shift.weak = true; return shift; } // implausible zoom step
+  return { a: F.a, b: F.b, tx: F.tx * 2, ty: F.ty * 2, n: inl.length, weak: inl.length < 4 }; // translation back to full (tracker) px, about the frame centre
+}
+const gmApply = (gm, p) => { const cx = TRK.W / 2, cy = TRK.H / 2, x = p[0] - cx, y = p[1] - cy; return [cx + gm.a * x - gm.b * y + gm.tx, cy + gm.b * x + gm.a * y + gm.ty]; };
+/* Object state: centre c (tracker px), scale k and rotation th relative to the seed outline. */
+const statePoly = (K, st) => K.base.map(([x, y]) => { const co = Math.cos(st.th), si = Math.sin(st.th); return pxToUv([st.c[0] + st.k * (x * co - y * si), st.c[1] + st.k * (x * si + y * co)]); });
+function simFit(P0, P1) { // similarity between two point lists (px): returns {dk, dth}
+  const m0 = [0, 0], m1 = [0, 0]; P0.forEach((p, i) => { m0[0] += p[0]; m0[1] += p[1]; m1[0] += P1[i][0]; m1[1] += P1[i][1]; }); [m0, m1].forEach(m => { m[0] /= P0.length; m[1] /= P0.length; });
+  let n1 = 0, n2 = 0, d = 0; P0.forEach((p, i) => { const X = p[0] - m0[0], Y = p[1] - m0[1], Xp = P1[i][0] - m1[0], Yp = P1[i][1] - m1[1]; n1 += X * Xp + Y * Yp; n2 += X * Yp - Y * Xp; d += X * X + Y * Y; });
+  return d > 0 ? { dk: Math.hypot(n1, n2) / d, dth: Math.atan2(n2, n1) } : { dk: 1, dth: 0 };
+}
+
 async function trkStart(o, seed, dir) {
   const v = await trkVideo(); if (!v) return null;
   const stopAt = dir > 0 ? (o.samples.find(s => s.src === 'analyst' && s.t > seed.t + 1e-3) || { t: S.dur }).t : ([...o.samples].reverse().find(s => s.src === 'analyst' && s.t < seed.t - 1e-3) || { t: 0 }).t;
-  // replace older tracker output between the seed and the next analyst keyframe
   o.samples = o.samples.filter(s => s.src === 'analyst' || s === seed || (dir > 0 ? (s.t <= seed.t + 1e-6 || s.t >= stopAt - 1e-6) : (s.t >= seed.t - 1e-6 || s.t <= stopAt + 1e-6)));
   if (seed.src === 'interp') { seed = { ...seed, src: 'tracker' }; addSample(o, seed); }
   if (seed.end) delete seed.end;
-  const G = await grabRGB(seed.t + 1e-3), [bx, by, bw, bh] = bboxPx(seed.poly);
-  const f = Math.max(1, Math.max(bw, bh) / 40), TW = Math.max(8, Math.round(bw / f)), TH = Math.max(8, Math.round(bh / f));
-  const sc0 = polyC(seed.poly), mpoly = seed.poly.map(p => { const q = uvToPx(p); return [(q[0] - bx) / bw * TW, (q[1] - by) / bh * TH]; });
-  let M = []; for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) if (pointInPoly(i + 0.5, j + 0.5, mpoly)) M.push(j * TW + i);
-  if (M.length < 16) M = [...Array(TW * TH).keys()];
-  M = Int32Array.from(M); const PT = TW * TH;
-  const T = sampleRect(G, TRK.W, TRK.H, bx, by, bw, bh, TW, TH); let [tm, tsd] = stats(T, M, PT);
-  if (tsd < 12) { M = Int32Array.from(Array(PT).keys()); [tm, tsd] = stats(T, M, PT); } // flat interior: keep the edges and context
-  const T0 = T.slice(), [t0m, t0sd] = stats(T0, M, PT); // seed template: anchors against update drift
-  void sc0;
+  const G = await grabRGB(seed.t + 1e-3), [bx, by, bw, bh] = bboxPx(seed.poly), c0 = [bx + bw / 2, by + bh / 2];
+  // small objects: include a margin of surroundings in the template (context helps matching)
+  const pad = Math.max(bw, bh) < 40 ? 0.25 : 0.08, tw = bw * (1 + 2 * pad), th = bh * (1 + 2 * pad);
+  const f = Math.max(1, Math.max(tw, th) / 40), TW = Math.max(10, Math.round(tw / f)), TH = Math.max(10, Math.round(th / f)), ux = tw / TW, uy = th / TH;
+  const base = seed.poly.map(p => { const q = uvToPx(p); return [q[0] - c0[0], q[1] - c0[1]]; });
+  const PT = TW * TH, T = sampleRot(G, TRK.W, TRK.H, c0[0], c0[1], ux, uy, 0, TW, TH);
+  // mask: the outline plus the context margin, weighted to the outline (all cells kept if the inside is flat)
+  const mpoly = base.map(([x, y]) => [x / ux + TW / 2, y / uy + TH / 2]);
+  let M = []; for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) if (pointInPoly(i + 0.5, j + 0.5, mpoly) || pad > 0.2) M.push(j * TW + i);
+  if (M.length < 16) M = [...Array(PT).keys()];
+  M = Int32Array.from(M); let [tm, tsd] = stats(T, M, PT);
+  let flat = false; if (tsd < 12) { flat = true; M = Int32Array.from(Array(PT).keys()); [tm, tsd] = stats(T, M, PT); } // featureless inside: match on edges/context, never adapt
+  const T0 = T.slice(), [t0m, t0sd] = stats(T0, M, PT);
   const kf = seed.src === 'analyst' ? seed.t : seed.kf;
-  return { kf, o, dir, seed, stopAt, f, TW, TH, M, PT, T, tm, tsd, T0, t0m, t0sd, prev: seed, vel: { gN: 0, gE: 0, u: 0, v: 0 }, lowRun: 0, suspect: [], lastGood: seed, fi: frameIndex(seed.t), n: 0, done: false, why: '' };
+  return { flat, kf, o, dir, seed, stopAt, f, TW, TH, ux, uy, M, PT, T, tm, tsd, T0, t0m, t0sd, base, st: { c: c0, k: 1, th: 0 }, L: lumPyr(G), ov: [0, 0], vel: { gN: 0, gE: 0, u: 0, v: 0 }, lowRun: 0, coast: 0, suspect: [], lastGood: seed, prev: seed, fi: frameIndex(seed.t), n: 0, done: false, why: '', innov: [] };
+}
+function trkSearch(K, G, hyp, R, scales, rots, Tt, tm, tsd) {
+  let best = { sc: -2 };
+  for (const ks of scales) for (const dr of rots) {
+    const k = hyp.k * ks, th = hyp.th + dr, ux = K.ux * k, uy = K.uy * k, aw = K.TW + 2 * R, ah = K.TH + 2 * R;
+    const A = sampleRot(G, TRK.W, TRK.H, hyp.c[0], hyp.c[1], ux, uy, th, aw, ah);
+    let lb = { sc: -2 };
+    const st = R > 6 ? 2 : 1;
+    for (let oy = 0; oy <= 2 * R; oy += st) for (let ox = 0; ox <= 2 * R; ox += st) { const sc = nccAt(A, aw, ah, Tt, K.TW, K.TH, ox, oy, tm, tsd, K.M); if (sc > lb.sc) lb = { sc, ox, oy }; }
+    if (st > 1) for (let oy = Math.max(0, lb.oy - 1); oy <= Math.min(2 * R, lb.oy + 1); oy++) for (let ox = Math.max(0, lb.ox - 1); ox <= Math.min(2 * R, lb.ox + 1); ox++) { const sc = nccAt(A, aw, ah, Tt, K.TW, K.TH, ox, oy, tm, tsd, K.M); if (sc > lb.sc) lb = { sc, ox, oy }; }
+    if (ks !== 1 || dr !== 0) lb.sc -= 0.015; // a scale/rotation change must earn its place
+    if (lb.sc > best.sc) {
+      const dx = (lb.ox - R) * ux, dy = (lb.oy - R) * uy, co = Math.cos(th), si = Math.sin(th);
+      best = { ...lb, A, aw, ah, R, k, th, c: [hyp.c[0] + dx * co - dy * si, hyp.c[1] + dx * si + dy * co], hyp };
+    }
+  }
+  return best;
 }
 async function trkStep(K) {
-  const { o, dir, f, TW, TH, M, PT, T, T0, t0m, t0sd, vel } = K;
-  let { prev, tm, tsd } = K;
-  const end = why => { K.done = true; K.why = why; };
+  const { o, dir } = K, prev = K.prev, st = K.st;
+  const end = why => { if (K.coast) { K.suspect.forEach(x => { const i = o.samples.indexOf(x); if (i >= 0) o.samples.splice(i, 1); }); K.prev = K.lastGood; if (!/^lost/.test(why)) why = 'lost while ' + (why === 'left the frame' ? 'leaving the frame' : 'coasting (' + why + ')'); } K.done = true; K.why = why; };
   K.fi += dir * CFG.trackStep;
   if (K.fi < 0 || K.fi >= S.frames.length) return end(dir > 0 ? 'end of video' : 'start of video');
   const t = S.frames[K.fi], stopAt = K.stopAt;
   if (dir > 0 ? t >= stopAt - 1e-6 : t <= stopAt + 1e-6) return end((dir > 0 ? stopAt < S.dur : stopAt > 0) ? 'reached analyst keyframe' : (dir > 0 ? 'end of video' : 'start of video'));
-  let G;
-    const dt = t - prev.t;
-    // prediction: ground-anchored via the camera model where possible, else image-space motion
-    let pred = null;
-    if (S.track && prev.g) {
-      const st0 = S.track.at(prev.t), P0 = makeProjector(st0), st1 = S.track.at(t), P1 = makeProjector(st1);
-      if (P0 && P1) {
-        const mLat = mpdLat(prev.g.lat), mLon = mpdLon(prev.g.lat);
-        const gp = prev.poly.map(p => P0.toGround(p[0], p[1]));
-        if (gp.every(q => q && !q.horizon)) {
-          const moved = gp.map(q => P1.toImage(q.lat + vel.gN * dt / mLat, q.lon + vel.gE * dt / mLon, q.h));
-          if (moved.every(Boolean)) pred = moved;
-        }
+  const dt = t - prev.t, G = await grabRGB(t + 1e-3), L = lumPyr(G);
+  // ---- motion hypotheses ----
+  const H = [];
+  const box = bboxPx(prev.poly), excl = [box[0] - box[2] * 0.5, box[1] - box[3] * 0.5, box[2] * 2, box[3] * 2];
+  const gm = globalMotion(K.L, L, excl); K.L = L;
+  if (!gm.weak) { const c = gmApply(gm, st.c); H.push({ weak: gm.weak, name: 'image registration', c: [c[0] + K.ov[0] * dt, c[1] + K.ov[1] * dt], k: st.k * Math.hypot(gm.a, gm.b), th: st.th + Math.atan2(gm.b, gm.a) }); }
+  if (S.track && prev.g) { // camera model (KLV): re-project the ground outline
+    const P0 = makeProjector(S.track.at(prev.t)), P1 = makeProjector(S.track.at(t));
+    if (P0 && P1) {
+      const mLat = mpdLat(prev.g.lat), mLon = mpdLon(prev.g.lat), pp = prev.poly.map(uvToPx);
+      const gp = prev.poly.map(p => P0.toGround(p[0], p[1]));
+      if (gp.every(q => q && !q.horizon)) {
+        const mv = gp.map(q => P1.toImage(q.lat + K.vel.gN * dt / mLat, q.lon + K.vel.gE * dt / mLon, q.h));
+        if (mv.every(Boolean)) { const mp = mv.map(uvToPx), sf = simFit(pp, mp), c1 = polyC(mp), c0 = polyC(pp); H.push({ name: 'camera model', c: [st.c[0] + c1[0] - c0[0], st.c[1] + c1[1] - c0[1]], k: st.k * sf.dk, th: st.th + sf.dth }); }
       }
     }
-    if (!pred) pred = prev.poly.map(p => [p[0] + vel.u * dt, p[1] + vel.v * dt]);
-    const imgPred = prev.poly.map(p => [p[0] + vel.u * dt, p[1] + vel.v * dt]);
-    G = await grabRGB(t + 1e-3);
-    // two hypotheses: camera-model (ground-anchored) and image-motion; keep the better match
-    const hyps = [pred];
-    { const a0 = bboxPx(pred), a1 = bboxPx(imgPred); if (Math.hypot(a0[0] - a1[0], a0[1] - a1[1]) > 2) hyps.push(imgPred); }
-    let best = { sc: -2 }, inFrame = false;
-    for (const hp of hyps) {
-      const [px, py, pw, ph] = bboxPx(hp);
-      if (px + pw < 0 || py + ph < 0 || px > TRK.W || py > TRK.H) continue;
-      inFrame = true;
-      const R = Math.round(clamp(10 + Math.hypot(vel.u * TRK.W / 2, vel.v * TRK.H / 2) * dt * 2, 10, 48) / f);
-      for (const s of [0.94, 1, 1.06]) {
-        const cw = pw * s, ch = ph * s, cx = px + pw / 2, cy = py + ph / 2;
-        const aw = TW + 2 * R, ah = TH + 2 * R, ux = cw / TW, uy = ch / TH;
-        const A = sampleRect(G, TRK.W, TRK.H, cx - cw / 2 - R * ux, cy - ch / 2 - R * uy, aw * ux, ah * uy, aw, ah);
-        let lb = { sc: -2 };
-        for (let oy = 0; oy <= 2 * R; oy += 2) for (let ox = 0; ox <= 2 * R; ox += 2) { const sc = nccAt(A, aw, ah, T, TW, TH, ox, oy, tm, tsd, M); if (sc > lb.sc) lb = { sc, ox, oy }; }
-        for (let oy = Math.max(0, lb.oy - 1); oy <= Math.min(2 * R, lb.oy + 1); oy++) for (let ox = Math.max(0, lb.ox - 1); ox <= Math.min(2 * R, lb.ox + 1); ox++) { const sc = nccAt(A, aw, ah, T, TW, TH, ox, oy, tm, tsd, M); if (sc > lb.sc) lb = { sc, ox, oy }; }
-        if (s !== 1) lb.sc -= 0.02; // a scale change must earn its place
-        if (lb.sc > best.sc) best = { ...lb, s, A, aw, ah, ux, uy, R, hp, box: [px, py, pw, ph] };
-      }
-    }
-    if (!inFrame) return end('left the frame');
-    // drift correction (Matthews et al. 2004): refine with the analyst's original template near the match
-    let agree = false;
-    if (best.A) {
-      let a0 = { sc: -2 };
-      for (let oy = Math.max(0, best.oy - 3); oy <= Math.min(2 * best.R, best.oy + 3); oy++) for (let ox = Math.max(0, best.ox - 3); ox <= Math.min(2 * best.R, best.ox + 3); ox++) { const sc = nccAt(best.A, best.aw, best.ah, T0, TW, TH, ox, oy, t0m, t0sd, M); if (sc > a0.sc) a0 = { sc, ox, oy }; }
-      if (a0.sc >= CFG.trackMinScore) { agree = Math.abs(a0.ox - best.ox) <= 1 && Math.abs(a0.oy - best.oy) <= 1; best.ox = a0.ox; best.oy = a0.oy; best.sc = Math.max(a0.sc, Math.min(best.sc, a0.sc + 0.1)); }
-    }
-    const [px, py, pw, ph] = best.box, R = best.R;
-    const dxp = (best.ox - R) * best.ux, dyp = (best.oy - R) * best.uy, ccx = px + pw / 2, ccy = py + ph / 2;
-    // innovation gate: a match far from the motion prediction is suspect (stops runaway on background)
-    const innov = Math.hypot(dxp, dyp) * 960 / TRK.W, gate = K.n >= 3 && innov > CFG.trackGate * CFG.trackStep;
-    if (best.sc < CFG.trackMinScore || gate) { if (++K.lowRun >= 2) { K.suspect.forEach(st => { const i = o.samples.indexOf(st); if (i >= 0) o.samples.splice(i, 1); }); K.prev = K.lastGood; return end(gate ? 'lost (jump ' + innov.toFixed(0) + ' px)' : 'lost (match ' + best.sc.toFixed(2) + ')'); } }
-    else K.lowRun = 0;
-    const poly = best.hp.map(p => { const q = uvToPx(p); return pxToUv([ccx + (q[0] - ccx) * best.s + dxp, ccy + (q[1] - ccy) * best.s + dyp]); });
-    const c = polyC(poly), g = groundOf(t, c);
-    // velocity (smoothed)
-    const a = 0.5;
-    if (!gate && g && prev.g && dt) { const mLat = mpdLat(g.lat), mLon = mpdLon(g.lat); vel.gN = lerp(vel.gN, (g.lat - prev.g.lat) * mLat / dt, a); vel.gE = lerp(vel.gE, (g.lon - prev.g.lon) * mLon / dt, a); }
-    if (!gate && dt) { vel.u = lerp(vel.u, (c[0] - prev.c[0]) / dt, a); vel.v = lerp(vel.v, (c[1] - prev.c[1]) / dt, a); }
-    const smp = { t, poly, c, g, conf: +best.sc.toFixed(3), src: 'tracker', kf: K.kf };
-    addSample(o, smp); K.prev = smp; K.n++;
-    if (K.lowRun) K.suspect.push(smp); else { K.suspect = []; K.lastGood = smp; }
-    // template update (slow) on confident matches
-    if (agree && best.sc > 0.75) { const NT = new Float32Array(3 * TW * TH); for (let c = 0; c < 3; c++) for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) NT[c * TW * TH + j * TW + i] = best.A[c * best.aw * best.ah + (best.oy + j) * best.aw + best.ox + i]; for (let k = 0; k < T.length; k++) T[k] = T[k] * 0.85 + NT[k] * 0.15; [K.tm, K.tsd] = stats(T, M, PT); }
-  return K.prev;
+  }
+  H.push({ name: 'object motion', c: [st.c[0] + K.vel.u * dt, st.c[1] + K.vel.v * dt], k: st.k, th: st.th });
+  const inF = h => h.c[0] > -10 && h.c[1] > -10 && h.c[0] < TRK.W + 10 && h.c[1] < TRK.H + 10;
+  if (!H.some(inF)) return end('left the frame');
+  // ---- search: translation per hypothesis, then scale/rotation around the best; wider while coasting ----
+  const grow = 1 + Math.min(2, K.coast * 1.5);
+  const R = Math.round(clamp((8 + Math.hypot(K.ov[0], K.ov[1]) * dt * 1.5) * grow, 6, 40) / (K.ux * st.k));
+  let best = { sc: -2 };
+  for (const hyp of H) { if (!inF(hyp)) continue; const b = trkSearch(K, G, hyp, R, [1], [0], K.T, K.tm, K.tsd); if (b.sc > best.sc) best = b; }
+  { const b = trkSearch(K, G, { c: best.c, k: best.k, th: best.th }, 2, [0.95, 1, 1.05], [-0.1, 0, 0.1], K.T, K.tm, K.tsd); if (b.sc > best.sc) { b.hyp = best.hyp; best = b; } }
+  // drift correction against the seed template (skipped once the object no longer looks like it: turned, zoomed)
+  let agree = false, a0 = { sc: -2 };
+  { const b0 = trkSearch(K, G, { c: best.c, k: best.k, th: best.th }, 2, [1], [0], K.T0, K.t0m, K.t0sd); a0 = b0;
+    agree = b0.sc > 0.3 && Math.hypot(b0.c[0] - best.c[0], b0.c[1] - best.c[1]) <= K.ux * best.k * 1.5; // seed outline lands in the same place
+    if (b0.sc >= CFG.trackMinScore && b0.sc > best.sc - 0.15) { best.c = b0.c; best.sc = Math.max(b0.sc, Math.min(best.sc, b0.sc + 0.1)); } }
+  // innovation: distance from the winning prediction (px at 960 wide); tolerance grows while coasting
+  const innov = Math.min(...H.map(h => Math.hypot(best.c[0] - h.c[0], best.c[1] - h.c[1]))) * 960 / TRK.W; // distance to the nearest motion prediction
+  const tol = CFG.trackGate * CFG.trackStep * (1 + K.coast * 2);
+  const gate = K.n >= 2 && innov > tol;
+  // re-acquiring after coasting needs a match about as good as the object's recent ones
+  const need = K.coast ? Math.max(CFG.trackMinScore + 0.1, (K.scRef ?? 0.8) - 0.15) : CFG.trackMinScore;
+  const ok = best.sc >= need && !gate && (!K.coast || a0.sc >= CFG.trackMinScore - 0.05); // re-found object must still resemble the analyst outline
+  if (window.TRKDBG) TRKDBG.push([+t.toFixed(2), +best.sc.toFixed(2), +a0.sc.toFixed(2), +innov.toFixed(1), +tol.toFixed(1), +K.coast.toFixed(2), +need.toFixed(2), best.hyp.name[0], gm.n, ok ? 1 : 0]);
+  if (!ok) {
+    K.lowRun++; K.coast += dt; K.confirm = 0;
+    if (K.coast > CFG.coastMax) { return end(gate ? 'lost (jump ' + innov.toFixed(0) + ' px)' : 'lost (match ' + best.sc.toFixed(2) + ')'); }
+    // coast on the best prediction (registration first: it carries the camera motion)
+    const hp = H.find(h => h.name === 'image registration') || H.find(h => h.name === 'camera model') || H[H.length - 1], ns = { c: hp.c, k: hp.k, th: hp.th };
+    if (!inF(hp)) return end('left the frame');
+    const poly = statePoly(K, ns), c = polyC(poly), smp = { t, poly, c, g: groundOf(t, c), conf: 0, src: 'tracker', coast: 1, kf: K.kf };
+    addSample(o, smp); K.suspect.push(smp); K.prev = smp; K.st = ns; K.n++;
+    return smp;
+  }
+  // accepted
+  const ns = { c: best.c, k: best.k, th: best.th };
+  const poly = statePoly(K, ns), c = polyC(poly), g = groundOf(t, c), a = 0.5;
+  if (dt && !K.coast) {
+    const pc = gmApply(gm, st.c), span = K.coast ? K.coast + dt : dt; // object's own image motion, camera motion removed
+    if (!K.coast && !gm.weak) { K.ov = [lerp(K.ov[0], (ns.c[0] - pc[0]) / dt, a), lerp(K.ov[1], (ns.c[1] - pc[1]) / dt, a)]; }
+    K.vel.u = lerp(K.vel.u, (ns.c[0] - st.c[0]) / dt, a); K.vel.v = lerp(K.vel.v, (ns.c[1] - st.c[1]) / dt, a);
+    if (g && prev.g) { const mLat = mpdLat(g.lat), mLon = mpdLon(g.lat); K.vel.gN = lerp(K.vel.gN, (g.lat - prev.g.lat) * mLat / span, a); K.vel.gE = lerp(K.vel.gE, (g.lon - prev.g.lon) * mLon / span, a); }
+  }
+  const smp = { t, poly, c, g, conf: +best.sc.toFixed(3), src: 'tracker', kf: K.kf };
+  addSample(o, smp); K.prev = smp; K.st = ns; K.n++; K.lowRun = 0;
+  if (K.coast) { // re-acquired: confirm on two consecutive steps before keeping the coasted stretch
+    K.suspect.push(smp); K.coast += dt;
+    if (++K.confirm < 2) return smp;
+    K.confirm = 0;
+  }
+  K.coast = 0; K.suspect = []; K.lastGood = smp; K.scRef = K.scRef == null ? best.sc : lerp(K.scRef, best.sc, 0.2);
+  // template update on confident matches: slow blend; faster when the seed template no longer matches (turning)
+  if (!K.flat && best.sc > 0.75 && agree) {
+    const NT = new Float32Array(3 * K.PT), pa = best.aw * best.ah;
+    for (let ch = 0; ch < 3; ch++) for (let j = 0; j < K.TH; j++) for (let i = 0; i < K.TW; i++) NT[ch * K.PT + j * K.TW + i] = best.A[ch * pa + (best.oy + j) * best.aw + best.ox + i];
+    const w = a0.sc >= CFG.trackMinScore ? 0.15 : 0.25; // adapt faster once the seed look has changed (turning, zoom) for (let k = 0; k < K.T.length; k++) K.T[k] = K.T[k] * (1 - w) + NT[k] * w; [K.tm, K.tsd] = stats(K.T, K.M, K.PT);
+  }
+  return smp;
 }
 function trkFinish(K, live) {
   const o = K.o, last = K.prev;
