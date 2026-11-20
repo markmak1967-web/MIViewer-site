@@ -211,7 +211,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.6.0', build: 11 };
+const BUILD = { ver: 'R0.6.1', build: 12 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -1138,12 +1138,29 @@ class Track {
     const last = {}, lastT = {};
     this.keys = new Set();
     for (const r of this.recs) for (const k in r.f) if (isNum(r.f[k]) || (k === 'corners' && r.f[k])) this.keys.add(k);
-    for (const r of this.recs) {
-      const g = {};
-      for (const k in r.f) { const v = r.f[k]; if (v !== null && v !== undefined) { last[k] = v; lastT[k] = r.t; } }
-      for (const k in last) if (r.t - lastT[k] <= CFG.holdMax) g[k] = last[k];
-      r.g = g;
+    // Each value is interpolated between ITS OWN samples. Encoders often send some tags (e.g. gimbal
+    // angles) in fewer packets than others (platform attitude); holding the stale value until the next
+    // update and then snapping makes the line of sight saw-tooth. Past the last sample it is held (holdMax).
+    for (const r of this.recs) r.g = {};
+    const n = this.recs.length;
+    for (const k of new Set(this.recs.flatMap(r => Object.keys(r.f)))) {
+      const idx = []; for (let i = 0; i < n; i++) { const v = this.recs[i].f[k]; if (v !== null && v !== undefined) idx.push(i); }
+      if (!idx.length) continue;
+      const num = isNum(this.recs[idx[0]].f[k]), isC = k === 'corners';
+      for (let j = 0; j < idx.length; j++) {
+        const ia = idx[j], A = this.recs[ia], va = A.f[k]; A.g[k] = va;
+        const ib = j + 1 < idx.length ? idx[j + 1] : -1, B = ib >= 0 ? this.recs[ib] : null, vb = B ? B.f[k] : undefined;
+        const end = ib >= 0 ? ib : n;
+        for (let i = ia + 1; i < end; i++) {
+          const r = this.recs[i];
+          if (B && B.t - A.t <= CFG.holdMax * 2 && (num || isC)) {
+            const f = (r.t - A.t) / Math.max(1e-9, B.t - A.t);
+            r.g[k] = isC ? (vb ? va.map((c, q) => [lerp(c[0], vb[q][0], f), lonLerp(c[1], vb[q][1], f)]) : va) : ANG_KEYS.has(k) ? angLerp(va, vb, f) : LON_KEYS.has(k) ? lonLerp(va, vb, f) : lerp(va, vb, f);
+          } else if (r.t - A.t <= CFG.holdMax) r.g[k] = va;
+        }
+      }
     }
+    void last; void lastT;
     // back-fill leading gaps (keys first seen within holdMax of the start)
     const firstSeen = {};
     for (const r of this.recs) for (const k in r.g) if (!(k in firstSeen)) firstSeen[k] = r;
@@ -3643,6 +3660,7 @@ async function loadObjects() {
   if (S.libItemId && typeof libLoadObjects === 'function') got = await libLoadObjects(S.libItemId);
   if (!got) try { const j = localStorage.getItem(objKey()); if (j) got = JSON.parse(j); } catch (e) { }
   OBJ.list = Array.isArray(got) ? got : [];
+  for (const o of OBJ.list) for (const sm of o.samples) if (sm.c) sm.g = groundOf(sm.t, sm.c); // ground positions always from the current geometry
   buildObjPane(); dirty();
 }
 
@@ -3845,7 +3863,7 @@ function loadCal() {
   if (!j) try { j = JSON.parse(localStorage.getItem(calKey()) || 'null'); } catch (e) { }
   CAL.list = (j && j.list) || []; CAL.meas = (j && j.meas) || []; CAL.on = j ? j.on !== false : true; CAL.mode = null; CAL.pend = null;
   CAL.list.forEach(c => calSolve(c)); CAL.meas.forEach(m => calMeasSolve(m));
-  if (CAL.list.length && S.track) { computeDerived(); S.orthoCache = null; }
+  if (CAL.list.length && S.track) { computeDerived(); S.orthoCache = null; if (typeof OBJ !== 'undefined') { for (const o of OBJ.list) for (const sm of o.samples) if (sm.c) sm.g = groundOf(sm.t, sm.c); _objPolyCache.clear(); } }
   buildCalPane(); dirty();
 }
 
