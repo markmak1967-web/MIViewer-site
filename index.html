@@ -1,0 +1,2452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MISB Viewer</title>
+<style>
+:root{
+  --bg:#0e1012;--p1:#15181b;--p2:#1b1f23;--p3:#23282d;--line:#2c3238;--line2:#3a424a;
+  --tx:#cdd3d9;--mu:#7f8a94;--dim:#56606a;--acc:#f0a030;--acc2:rgba(240,160,48,.16);
+  --ok:#7fbf7f;--bad:#e06c5c;
+  --mono:ui-monospace,"Cascadia Mono","Segoe UI Mono",Consolas,Menlo,"DejaVu Sans Mono",monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);font:12px/1.35 var(--mono);overflow:hidden}
+button,select,input{font:inherit;color:var(--tx);background:var(--p3);border:1px solid var(--line2);border-radius:2px;padding:3px 7px}
+button{cursor:pointer}
+button:hover{border-color:var(--acc)}
+button.on{background:var(--acc2);border-color:var(--acc);color:var(--acc)}
+button:disabled{opacity:.4;cursor:default;border-color:var(--line2)}
+input[type=number]{width:72px}
+input[type=text]{width:100%}
+input[type=range]{padding:0;accent-color:var(--acc)}
+input[type=checkbox]{accent-color:var(--acc);vertical-align:-2px}
+select{max-width:100%}
+#app{display:grid;grid-template-rows:auto auto 1fr;height:100%}
+#secbar{display:none;text-align:center;font-weight:bold;letter-spacing:.12em;padding:2px;background:#2d6a2d;color:#fff}
+#secbar.show{display:block}
+header{display:flex;align-items:center;gap:10px;padding:5px 10px;background:var(--p1);border-bottom:1px solid var(--line)}
+header .logo{font-weight:bold;letter-spacing:.14em;color:var(--acc)}
+header .ver{color:var(--dim)}
+header #fileName{color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40vw}
+header #status{margin-left:auto;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+main{display:grid;grid-template-columns:1fr 380px;min-height:0}
+#left{display:grid;grid-template-rows:1fr 5px var(--bottomH,300px) 96px;min-width:0;min-height:0}
+#mapWrap{position:relative;min-height:0;overflow:hidden;background:#0b0d0e}
+#map{position:absolute;inset:0;width:100%;height:100%;cursor:grab;display:block}
+#map.draw{cursor:crosshair}
+#map.drag{cursor:grabbing}
+#mapTools{position:absolute;top:8px;left:8px;display:flex;gap:4px;flex-wrap:wrap}
+#mapTools button{background:rgba(21,24,27,.9)}
+#mapRead{position:absolute;bottom:4px;left:8px;color:var(--tx);background:rgba(14,16,18,.75);padding:2px 6px;pointer-events:none}
+#mapAttr{position:absolute;bottom:4px;right:8px;color:var(--mu);background:rgba(14,16,18,.75);padding:2px 6px;font-size:10px;pointer-events:none}
+#legend{position:absolute;top:8px;right:8px;background:rgba(14,16,18,.82);padding:5px 8px;border:1px solid var(--line);pointer-events:none;line-height:1.6}
+#legend i{display:inline-block;width:18px;height:0;border-top:2px solid;vertical-align:middle;margin-right:6px}
+#drop{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;color:var(--mu);pointer-events:none;text-align:center}
+#drop b{color:var(--tx);font-size:14px;letter-spacing:.08em}
+body.dragover #mapWrap{outline:2px dashed var(--acc);outline-offset:-6px}
+#split{background:var(--line);cursor:row-resize}
+#split:hover{background:var(--acc)}
+#bottom{display:grid;grid-template-columns:auto 1fr;min-height:0;background:var(--p1)}
+#vidWrap{position:relative;height:100%;aspect-ratio:var(--vidAR,16/9);background:#000;overflow:hidden}
+#vid{width:100%;height:100%;display:block;object-fit:fill}
+#vidOv{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}
+#vidMsg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--mu);text-align:center;padding:20px;pointer-events:none}
+#ctrl{display:flex;flex-direction:column;gap:6px;padding:8px 10px;min-width:0;overflow:auto}
+.row{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
+.tc{font-size:18px;color:var(--acc);letter-spacing:.04em}
+.kv{display:grid;grid-template-columns:auto 1fr auto 1fr;gap:1px 10px}
+.kv span:nth-child(odd){color:var(--mu)}
+#tl{width:100%;height:96px;display:block;background:var(--p1);border-top:1px solid var(--line);cursor:pointer}
+aside{display:flex;flex-direction:column;border-left:1px solid var(--line);background:var(--p1);min-height:0}
+#tabs{display:flex;border-bottom:1px solid var(--line)}
+#tabs button{flex:1;border:0;border-radius:0;background:none;padding:7px 0;color:var(--mu);border-bottom:2px solid transparent}
+#tabs button.on{color:var(--acc);border-bottom-color:var(--acc)}
+.pane{display:none;overflow:auto;padding:10px;flex:1;min-height:0}
+.pane.on{display:block}
+h3{margin:12px 0 6px;font-size:11px;color:var(--acc);letter-spacing:.1em;text-transform:uppercase;border-bottom:1px solid var(--line);padding-bottom:3px}
+h3:first-child{margin-top:0}
+table{border-collapse:collapse;width:100%}
+td,th{padding:2px 4px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}
+th{color:var(--mu);font-weight:normal}
+td.n{text-align:right;white-space:nowrap}
+td.k{color:var(--mu);white-space:nowrap}
+td.t{color:var(--dim);text-align:right;width:28px}
+.muted{color:var(--mu)}
+.dim{color:var(--dim)}
+.okc{color:var(--ok)}
+.badc{color:var(--bad)}
+.accc{color:var(--acc)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;align-items:center}
+.grid2 label{color:var(--mu)}
+.field{display:flex;flex-direction:column;gap:2px;margin-bottom:6px}
+.field label{color:var(--mu)}
+.btns{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}
+.note{color:var(--mu);font-size:11px;margin:4px 0 8px}
+.res{border:1px solid var(--line);padding:5px 6px;margin-bottom:4px;cursor:pointer;background:var(--p2)}
+.res:hover,.res.sel{border-color:var(--acc)}
+.res .h{display:flex;justify-content:space-between;color:var(--acc)}
+.rule{display:grid;grid-template-columns:1fr 54px 70px 22px;gap:3px;margin-bottom:3px}
+.rule button{padding:0}
+pre.hex{white-space:pre-wrap;word-break:break-all;color:var(--mu);font-size:11px;background:var(--p2);padding:6px;margin:4px 0}
+.bar{height:4px;background:var(--p3);margin-top:3px}
+.bar i{display:block;height:100%;background:var(--acc)}
+kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu)}
+</style>
+</head>
+<body>
+<div id="app">
+<div id="secbar"></div>
+<header>
+  <span class="logo">MISB VIEWER</span><span class="ver" id="ver"></span>
+  <button id="btnOpen" title="Open video, KLV, CSV/JSON metadata or DEM">Open…</button>
+  <input type="file" id="fileIn" multiple hidden>
+  <span id="fileName" class="muted">no file</span>
+  <span id="status"></span>
+</header>
+<main>
+<section id="left">
+  <div id="mapWrap">
+    <canvas id="map"></canvas>
+    <div id="mapTools">
+      <button id="bFit" title="Fit map to flight">Fit</button>
+      <button id="bFollow" title="Keep current footprint in view">Follow</button>
+      <button id="bOrtho" title="Drape current frame on the map (pseudo-ortho)">Ortho</button>
+      <button id="bHist" title="Show footprint history">History</button>
+      <button id="bAoi" title="Draw observation area: click vertices, double-click to finish. One click + Enter = point">Draw AOI</button>
+      <button id="bAoiClr" title="Clear AOI">Clear AOI</button>
+    </div>
+    <div id="legend"></div>
+    <div id="drop"><b>DROP MOTION IMAGERY HERE</b><span>MISB MPEG-TS (.ts .m2ts .mpg) · MP4/MOV · raw KLV (.klv .bin)<br>sidecar metadata (.csv .json) · ESRI ASCII DEM (.asc)</span></div>
+    <div id="mapRead"></div>
+    <div id="mapAttr"></div>
+  </div>
+  <div id="split" title="Drag to resize"></div>
+  <div id="bottom">
+    <div id="vidWrap"><video id="vid" muted playsinline preload="auto"></video><canvas id="vidOv"></canvas><div id="vidMsg">No video loaded</div></div>
+    <div id="ctrl">
+      <div class="row"><span class="tc" id="tc">--:--.---</span><span class="muted" id="fr">frame – / –</span></div>
+      <div class="row">
+        <button id="bStart" title="Start (Home)">|◀</button>
+        <button id="bBack" title="−1 s (Shift+←)">◀◀</button>
+        <button id="bPrev" title="−1 frame (←)">◀|</button>
+        <button id="bPlay" title="Play/Pause (Space)" style="min-width:44px">▶</button>
+        <button id="bNext" title="+1 frame (→)">|▶</button>
+        <button id="bFwd" title="+1 s (Shift+→)">▶▶</button>
+        <button id="bEnd" title="End (End)">▶|</button>
+        <select id="rate" title="Playback rate"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select>
+      </div>
+      <div class="row">
+        <button id="bIn" title="Set clip in (I)">In</button>
+        <button id="bOut" title="Set clip out (O)">Out</button>
+        <button id="bClr" title="Clear clip">Clear</button>
+        <label><input type="checkbox" id="cLoop"> loop clip</label>
+        <span class="muted" id="clipTxt"></span>
+      </div>
+      <div class="kv" id="hud"></div>
+    </div>
+  </div>
+  <canvas id="tl"></canvas>
+</section>
+<aside>
+  <div id="tabs">
+    <button data-p="pFile" class="on">FILE</button>
+    <button data-p="pMeta">META</button>
+    <button data-p="pSearch">SEARCH</button>
+    <button data-p="pExport">EXPORT</button>
+    <button data-p="pSet">SETTINGS</button>
+  </div>
+  <div class="pane on" id="pFile"><p class="muted">Open or drop a file to begin.</p></div>
+  <div class="pane" id="pMeta"></div>
+  <div class="pane" id="pSearch"></div>
+  <div class="pane" id="pExport"></div>
+  <div class="pane" id="pSet"></div>
+</aside>
+</main>
+</div>
+<script>
+'use strict';
+/* =====================================================================
+   MISB VIEWER — single-file motion imagery metadata viewer
+   No external libraries. No embedded binary. Network use is optional:
+   basemap tiles and Terrarium DEM tiles only, both switchable off.
+   ===================================================================== */
+const BUILD = { ver: 'R0.1.0', build: 1 };
+
+/* ---------- small utilities ---------- */
+const $ = s => document.querySelector(s);
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp = (a, b, f) => a + (b - a) * f;
+const isNum = v => typeof v === 'number' && isFinite(v);
+const wrap360 = a => ((a % 360) + 360) % 360;
+const angLerp = (a, b, f) => { let d = ((b - a + 540) % 360) - 180; return wrap360(a + d * f); };
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  if (attrs) for (const k in attrs) {
+    const v = attrs[k];
+    if (k === 'class') e.className = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (k === 'html') e.innerHTML = v;
+    else if (v !== undefined && v !== null && v !== false) e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of kids.flat()) if (c !== null && c !== undefined && c !== false) e.append(c.nodeType ? c : document.createTextNode(String(c)));
+  return e;
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function fmtT(t) {
+  if (!isNum(t)) return '--:--.---';
+  const s = Math.max(0, t), m = Math.floor(s / 60), r = s - m * 60;
+  const hh = Math.floor(m / 60);
+  return (hh ? hh + ':' + String(m % 60).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + r.toFixed(3).padStart(6, '0');
+}
+function fmtUTC(us) {
+  if (!isNum(us)) return '–';
+  const d = new Date(us / 1000);
+  if (isNaN(d)) return '–';
+  return d.toISOString().replace('T', ' ').replace('Z', 'Z');
+}
+const fx = (v, n = 1) => isNum(v) ? v.toFixed(n) : '–';
+const fdeg = (v, n = 6) => isNum(v) ? v.toFixed(n) : '–';
+function hex(u8, max = 4096) {
+  let s = '';
+  const n = Math.min(u8.length, max);
+  for (let i = 0; i < n; i++) s += u8[i].toString(16).padStart(2, '0') + (i % 16 === 15 ? '\n' : ' ');
+  return s + (u8.length > max ? '… (' + u8.length + ' bytes)' : '');
+}
+function download(name, data, type = 'application/octet-stream') {
+  const blob = data instanceof Blob ? data : new Blob(Array.isArray(data) ? data : [data], { type });
+  const url = URL.createObjectURL(blob);
+  const a = h('a', { href: url, download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+function concatU8(parts, total) {
+  if (total === undefined) total = parts.reduce((s, p) => s + p.length, 0);
+  const out = new Uint8Array(total); let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+function readU(b, i = 0, n = b.length - i) { let v = 0; for (let k = 0; k < n; k++) v = v * 256 + b[i + k]; return v; }
+function readS(b, i = 0, n = b.length - i) { const u = readU(b, i, n); return b[i] & 0x80 ? u - 2 ** (8 * n) : u; }
+const td = new TextDecoder('utf-8');
+const str = b => td.decode(b).replace(/\0+$/, '');
+function median(a) { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; }
+function bsearchLE(arr, t, key) { // largest index with key(arr[i]) <= t
+  let lo = 0, hi = arr.length - 1, r = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (key(arr[m]) <= t) { r = m; lo = m + 1; } else hi = m - 1; }
+  return r;
+}
+
+/* =====================================================================
+   MPEG-TS DEMUX (ISO/IEC 13818-1) — PAT/PMT, PES, KLV per MISB ST1402
+   ===================================================================== */
+const STREAM_TYPES = {
+  0x01: ['video', 'MPEG-1 video'], 0x02: ['video', 'MPEG-2 video'], 0x10: ['video', 'MPEG-4 Part 2'],
+  0x1B: ['video', 'H.264/AVC'], 0x24: ['video', 'H.265/HEVC'],
+  0x03: ['audio', 'MPEG-1 audio'], 0x04: ['audio', 'MPEG-2 audio'], 0x0F: ['audio', 'AAC'], 0x11: ['audio', 'AAC LATM'], 0x81: ['audio', 'AC-3'],
+  0x15: ['klv', 'Metadata in PES (sync KLV)'], 0x06: ['private', 'Private PES'],
+};
+
+function detectTS(u8) {
+  for (const ps of [188, 192, 204]) {
+    const pre = ps === 192 ? 4 : 0;
+    for (let off = 0; off < ps; off++) {
+      let ok = true;
+      for (let k = 0; k < 6; k++) { const p = off + k * ps + pre; if (p >= u8.length || u8[p] !== 0x47) { ok = false; break; } }
+      if (ok) return { ps, off: off + pre };
+    }
+  }
+  return null;
+}
+
+function readPTS(b, i) {
+  return ((b[i] >> 1) & 7) * 1073741824 + b[i + 1] * 4194304 + (b[i + 2] >> 1) * 32768 + b[i + 3] * 128 + (b[i + 4] >> 1);
+}
+
+function makeUnwrapper() {
+  let last = null, add = 0;
+  return v => {
+    if (v === null || v === undefined) return v;
+    let x = v + add;
+    if (last !== null) {
+      if (x - last < -4294967296) { add += 8589934592; x += 8589934592; }
+      else if (x - last > 4294967296) { add -= 8589934592; x -= 8589934592; }
+    }
+    last = x; return x;
+  };
+}
+
+function parsePSI(pay) {
+  const ptr = pay[0];
+  const s = 1 + ptr;
+  if (s + 3 > pay.length) return null;
+  const tid = pay[s], len = ((pay[s + 1] & 0x0F) << 8) | pay[s + 2];
+  return { tid, sec: pay.subarray(s, Math.min(pay.length, s + 3 + len)), len };
+}
+
+async function demuxTS(u8, progress) {
+  const det = detectTS(u8);
+  if (!det) throw new Error('No MPEG-TS sync found');
+  const { ps } = det;
+  const pmtPids = new Map(); // pid -> program
+  const streams = new Map(); // pid -> info
+  const cur = new Map();     // pid -> {off, chunks, len}
+  const pesList = new Map(); // pid -> [{off, data, pts, dts, sid}]
+  const unwrap = new Map();
+  let firstPAT = null, firstPMT = null, pcrPid = -1, pktCount = 0, resyncs = 0;
+
+  function flush(pid) {
+    const c = cur.get(pid); if (!c) return;
+    cur.delete(pid);
+    const d = c.chunks.length === 1 ? c.chunks[0] : concatU8(c.chunks, c.len);
+    if (d.length < 9 || d[0] !== 0 || d[1] !== 0 || d[2] !== 1) return;
+    const sid = d[3], plen = (d[4] << 8) | d[5];
+    let pts = null, dts = null, start = 6;
+    if (!(sid === 0xBC || sid === 0xBE || sid === 0xBF || sid === 0xF0 || sid === 0xF1 || sid === 0xFF || sid === 0xF2 || sid === 0xF8)) {
+      const flags = d[7], hdl = d[8];
+      if ((flags & 0x80) && d.length >= 14) pts = readPTS(d, 9);
+      if ((flags & 0x40) && d.length >= 19) dts = readPTS(d, 14);
+      start = 9 + hdl;
+    }
+    let end = plen ? Math.min(d.length, 6 + plen) : d.length;
+    if (start > end) return;
+    let uw = unwrap.get(pid); if (!uw) { uw = makeUnwrapper(); unwrap.set(pid, uw); }
+    if (pts !== null) pts = uw(pts);
+    if (dts !== null) dts = uw(dts);
+    let arr = pesList.get(pid); if (!arr) { arr = []; pesList.set(pid, arr); }
+    arr.push({ off: c.off, data: d.subarray(start, end), pts, dts, sid });
+  }
+
+  const n = u8.length;
+  let lastYield = performance.now();
+  for (let p = det.off; p + 188 <= n; p += ps) {
+    if (u8[p] !== 0x47) { // resync
+      let q = p + 1;
+      while (q + 188 <= n && !(u8[q] === 0x47 && (q + ps >= n || u8[q + ps] === 0x47))) q++;
+      resyncs++; p = q - ps; continue;
+    }
+    pktCount++;
+    const b1 = u8[p + 1], pusi = b1 & 0x40, pid = ((b1 & 0x1F) << 8) | u8[p + 2], afc = (u8[p + 3] >> 4) & 3;
+    let i = p + 4;
+    if (afc & 2) i += 1 + u8[p + 4];
+    if (!(afc & 1) || i >= p + 188) continue;
+    const pay = u8.subarray(i, p + 188);
+    if (pid === 0) {
+      if (!pusi) continue;
+      const psi = parsePSI(pay); if (!psi || psi.tid !== 0) continue;
+      if (!firstPAT) firstPAT = u8.slice(p, p + 188);
+      const sec = psi.sec, end = Math.min(sec.length, 3 + psi.len - 4);
+      for (let k = 8; k + 4 <= end; k += 4) {
+        const prog = (sec[k] << 8) | sec[k + 1], ppid = ((sec[k + 2] & 0x1F) << 8) | sec[k + 3];
+        if (prog !== 0) pmtPids.set(ppid, prog);
+      }
+    } else if (pmtPids.has(pid)) {
+      if (!pusi) continue;
+      const psi = parsePSI(pay); if (!psi || psi.tid !== 2) continue;
+      if (!firstPMT) firstPMT = u8.slice(p, p + 188);
+      const sec = psi.sec;
+      pcrPid = ((sec[8] & 0x1F) << 8) | sec[9];
+      const pil = ((sec[10] & 0x0F) << 8) | sec[11];
+      const end = Math.min(sec.length, 3 + psi.len - 4);
+      for (let k = 12 + pil; k + 5 <= end;) {
+        const st = sec[k], epid = ((sec[k + 1] & 0x1F) << 8) | sec[k + 2], eil = ((sec[k + 3] & 0x0F) << 8) | sec[k + 4];
+        if (!streams.has(epid)) {
+          const descs = []; let reg = '';
+          for (let j = k + 5; j + 2 <= k + 5 + eil && j + 2 <= end;) {
+            const tag = sec[j], dl = sec[j + 1];
+            descs.push(tag);
+            if (tag === 0x05 && dl >= 4) reg = String.fromCharCode(sec[j + 2], sec[j + 3], sec[j + 4], sec[j + 5]);
+            if (tag === 0x26 && dl >= 9) reg = reg || 'META';
+            j += 2 + dl;
+          }
+          let [kind, codec] = STREAM_TYPES[st] || ['other', 'stream_type 0x' + st.toString(16)];
+          if (reg === 'KLVA' || (st === 0x15)) { kind = 'klv'; codec = st === 0x15 ? 'KLV synchronous (0x15)' : 'KLV asynchronous (0x06/KLVA)'; }
+          if (st === 0x06 && reg === 'AC-3') { kind = 'audio'; codec = 'AC-3'; }
+          streams.set(epid, { pid: epid, st, kind, codec, reg, descs, prog: pmtPids.get(pid) });
+        }
+        k += 5 + eil;
+      }
+    } else {
+      const s = streams.get(pid);
+      if (!s) continue;
+      if (s.kind !== 'video' && s.kind !== 'klv' && s.kind !== 'private') continue;
+      if (pusi) { flush(pid); cur.set(pid, { off: p, chunks: [pay], len: pay.length }); }
+      else { const c = cur.get(pid); if (c) { c.chunks.push(pay); c.len += pay.length; } }
+    }
+    if ((pktCount & 0x7FFF) === 0 && performance.now() - lastYield > 60) {
+      progress && progress(p / n); await new Promise(r => setTimeout(r)); lastYield = performance.now();
+    }
+  }
+  for (const pid of [...cur.keys()]) flush(pid);
+  return { det, streams, pesList, firstPAT, firstPMT, pcrPid, pktCount, resyncs };
+}
+
+/* ---------- H.264 helpers ---------- */
+function splitAnnexB(d) {
+  const nals = []; let i = 0, start = -1; const n = d.length;
+  while (i + 2 < n) {
+    if (d[i + 2] > 1) { i += 3; continue; }
+    if (d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 1) {
+      if (start >= 0) { let e = i; while (e > start && d[e - 1] === 0) e--; if (e > start) nals.push(d.subarray(start, e)); }
+      i += 3; start = i;
+    } else i++;
+  }
+  if (start >= 0 && start < n) nals.push(d.subarray(start, n));
+  return nals;
+}
+function unescapeRBSP(n) {
+  const out = []; for (let i = 0; i < n.length; i++) { if (i >= 2 && n[i] === 3 && n[i - 1] === 0 && n[i - 2] === 0) continue; out.push(n[i]); }
+  return Uint8Array.from(out);
+}
+class BitR {
+  constructor(b) { this.b = b; this.p = 0; }
+  u(n) { let v = 0; for (let i = 0; i < n; i++) { v = v * 2 + ((this.b[this.p >> 3] >> (7 - (this.p & 7))) & 1); this.p++; } return v; }
+  ue() { let z = 0; while (this.u(1) === 0 && z < 32) z++; return 2 ** z - 1 + (z ? this.u(z) : 0); }
+  se() { const k = this.ue(); return k & 1 ? (k + 1) / 2 : -k / 2; }
+}
+function parseSPS(nal) {
+  const r = new BitR(unescapeRBSP(nal.subarray(1)));
+  const profile = r.u(8), compat = r.u(8), level = r.u(8); r.ue();
+  let chroma = 1;
+  if ([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135].includes(profile)) {
+    chroma = r.ue(); if (chroma === 3) r.u(1);
+    r.ue(); r.ue(); r.u(1);
+    if (r.u(1)) for (let i = 0; i < (chroma !== 3 ? 8 : 12); i++) if (r.u(1)) {
+      const sz = i < 6 ? 16 : 64; let last = 8, next = 8;
+      for (let j = 0; j < sz; j++) { if (next !== 0) next = (last + r.se() + 256) % 256; last = next === 0 ? last : next; }
+    }
+  }
+  r.ue();
+  const poc = r.ue();
+  if (poc === 0) r.ue();
+  else if (poc === 1) { r.u(1); r.se(); r.se(); const c = r.ue(); for (let i = 0; i < c; i++) r.se(); }
+  r.ue(); r.u(1);
+  const wmb = r.ue() + 1, hmu = r.ue() + 1, fmo = r.u(1);
+  if (!fmo) r.u(1);
+  r.u(1);
+  let cl = 0, cr = 0, ct = 0, cb = 0;
+  if (r.u(1)) { cl = r.ue(); cr = r.ue(); ct = r.ue(); cb = r.ue(); }
+  const cx = chroma === 0 ? 1 : (chroma === 3 ? 1 : 2), cy = (chroma === 1 ? 2 : 1) * (2 - fmo);
+  return { profile, compat, level, width: wmb * 16 - (cl + cr) * cx, height: (2 - fmo) * hmu * 16 - (ct + cb) * cy };
+}
+
+/* Build video samples from TS PES list */
+function buildVideoFromTS(stream, pes) {
+  const v = { codec: stream.codec, st: stream.st, timescale: 90000, samples: [], playable: false, sps: null, pps: null, width: 0, height: 0 };
+  const isAVC = stream.st === 0x1B, isHEVC = stream.st === 0x24;
+  let lastPts = null;
+  for (const p of pes) {
+    let pts = p.pts, dts = p.dts !== null ? p.dts : p.pts;
+    if (pts === null) { if (lastPts === null) continue; pts = dts = lastPts + 3003; }
+    lastPts = pts;
+    let key = false, data = null;
+    if (isAVC) {
+      const nals = splitAnnexB(p.data), keep = []; let tot = 0;
+      for (const nal of nals) {
+        const t = nal[0] & 0x1F;
+        if (t === 5) key = true;
+        if (t === 7) { if (!v.sps) v.sps = nal.slice(); continue; }
+        if (t === 8) { if (!v.pps) v.pps = nal.slice(); continue; }
+        if (t === 9 || t === 12) continue;
+        keep.push(nal); tot += 4 + nal.length;
+      }
+      if (!keep.length) continue;
+      data = new Uint8Array(tot); let o = 0;
+      for (const nal of keep) { const L = nal.length; data[o] = L >>> 24; data[o + 1] = (L >> 16) & 255; data[o + 2] = (L >> 8) & 255; data[o + 3] = L & 255; data.set(nal, o + 4); o += 4 + L; }
+    } else if (isHEVC) {
+      for (const nal of splitAnnexB(p.data)) { const t = (nal[0] >> 1) & 0x3F; if (t >= 16 && t <= 21) key = true; }
+    } else key = true;
+    v.samples.push({ pts, dts, key, data, size: data ? data.length : p.data.length, off: p.off });
+  }
+  if (isAVC && v.sps && v.pps) {
+    try { const s = parseSPS(v.sps); Object.assign(v, { width: s.width, height: s.height, profile: s.profile, level: s.level }); v.playable = true; } catch (e) { console.warn('SPS', e); }
+    if (!v.samples.some(s => s.key) && v.samples.length) v.samples[0].key = true;
+  }
+  return v;
+}
+
+/* =====================================================================
+   ISO BMFF (MP4/MOV) PARSER — non-fragmented files
+   ===================================================================== */
+function mp4Boxes(u8, s, e) {
+  const out = []; const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  let p = s;
+  while (p + 8 <= e) {
+    let size = dv.getUint32(p), type = String.fromCharCode(u8[p + 4], u8[p + 5], u8[p + 6], u8[p + 7]), hl = 8;
+    if (size === 1) { size = Number(dv.getBigUint64(p + 8)); hl = 16; }
+    else if (size === 0) size = e - p;
+    if (size < hl || p + size > e) { if (p + hl <= e) out.push({ type, s: p, d: p + hl, e: e, trunc: true }); break; }
+    out.push({ type, s: p, d: p + hl, e: p + size });
+    p += size;
+  }
+  return out;
+}
+const kid = (u8, box, type) => mp4Boxes(u8, box.d, box.e).find(b => b.type === type);
+function parseMP4(u8) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const top = mp4Boxes(u8, 0, u8.length);
+  const moov = top.find(b => b.type === 'moov');
+  if (!moov) throw new Error('No moov box (fragmented or truncated MP4 is not supported for analysis)');
+  if (top.some(b => b.type === 'moof')) console.warn('Fragmented MP4: only moov sample tables used');
+  let movieTS = 1000;
+  const mvhd = kid(u8, moov, 'mvhd');
+  if (mvhd) movieTS = u8[mvhd.d] === 1 ? dv.getUint32(mvhd.d + 20) : dv.getUint32(mvhd.d + 12);
+  const tracks = [];
+  for (const trak of mp4Boxes(u8, moov.d, moov.e).filter(b => b.type === 'trak')) {
+    const t = {};
+    const tkhd = kid(u8, trak, 'tkhd');
+    t.id = tkhd ? (u8[tkhd.d] === 1 ? dv.getUint32(tkhd.d + 20) : dv.getUint32(tkhd.d + 12)) : 0;
+    const mdia = kid(u8, trak, 'mdia'); if (!mdia) continue;
+    const mdhd = kid(u8, mdia, 'mdhd');
+    t.timescale = u8[mdhd.d] === 1 ? dv.getUint32(mdhd.d + 20) : dv.getUint32(mdhd.d + 12);
+    const hdlr = kid(u8, mdia, 'hdlr');
+    t.handler = String.fromCharCode(...u8.subarray(hdlr.d + 8, hdlr.d + 12));
+    // edit list
+    t.mediaStart = 0; t.emptyStart = 0;
+    const edts = kid(u8, trak, 'edts');
+    if (edts) {
+      const elst = kid(u8, edts, 'elst');
+      if (elst) {
+        const ver = u8[elst.d], cnt = dv.getUint32(elst.d + 4); let q = elst.d + 8;
+        for (let k = 0; k < cnt; k++) {
+          const dur = ver ? Number(dv.getBigUint64(q)) : dv.getUint32(q);
+          const mt = ver ? Number(dv.getBigInt64(q + 8)) : dv.getInt32(q + 4);
+          q += ver ? 20 : 12;
+          if (mt === -1) t.emptyStart += dur / movieTS; else { t.mediaStart = mt; break; }
+        }
+      }
+    }
+    const minf = kid(u8, mdia, 'minf'), stbl = minf && kid(u8, minf, 'stbl'); if (!stbl) continue;
+    const B = {}; for (const b of mp4Boxes(u8, stbl.d, stbl.e)) B[b.type] = b;
+    const stsd = B.stsd; const ent = mp4Boxes(u8, stsd.d + 8, stsd.e)[0];
+    t.entryType = ent ? ent.type : '?';
+    t.entry = ent ? u8.slice(ent.s, ent.e) : null;
+    if (t.handler === 'vide' && ent) { t.width = dv.getUint16(ent.d + 24); t.height = dv.getUint16(ent.d + 26); }
+    // sample sizes
+    let sizes = [];
+    if (B.stsz) { const fixed = dv.getUint32(B.stsz.d + 4), cnt = dv.getUint32(B.stsz.d + 8); for (let k = 0; k < cnt; k++) sizes.push(fixed || dv.getUint32(B.stsz.d + 12 + k * 4)); }
+    else if (B.stz2) { const fs = u8[B.stz2.d + 7], cnt = dv.getUint32(B.stz2.d + 8); for (let k = 0; k < cnt; k++) sizes.push(fs === 16 ? dv.getUint16(B.stz2.d + 12 + k * 2) : fs === 8 ? u8[B.stz2.d + 12 + k] : ((u8[B.stz2.d + 12 + (k >> 1)] >> (k & 1 ? 0 : 4)) & 15)); }
+    const N = sizes.length;
+    const chunkOff = [];
+    if (B.stco) { const c = dv.getUint32(B.stco.d + 4); for (let k = 0; k < c; k++) chunkOff.push(dv.getUint32(B.stco.d + 8 + k * 4)); }
+    if (B.co64) { const c = dv.getUint32(B.co64.d + 4); for (let k = 0; k < c; k++) chunkOff.push(Number(dv.getBigUint64(B.co64.d + 8 + k * 8))); }
+    const stsc = []; if (B.stsc) { const c = dv.getUint32(B.stsc.d + 4); for (let k = 0; k < c; k++) stsc.push([dv.getUint32(B.stsc.d + 8 + k * 12), dv.getUint32(B.stsc.d + 12 + k * 12)]); }
+    const offs = new Array(N); let si = 0;
+    for (let e = 0; e < stsc.length; e++) {
+      const first = stsc[e][0] - 1, last = e + 1 < stsc.length ? stsc[e + 1][0] - 1 : chunkOff.length, per = stsc[e][1];
+      for (let c = first; c < last && si < N; c++) { let o = chunkOff[c]; for (let k = 0; k < per && si < N; k++) { offs[si] = o; o += sizes[si]; si++; } }
+    }
+    const dts = new Array(N), cto = new Array(N).fill(0), durs = new Array(N);
+    if (B.stts) { const c = dv.getUint32(B.stts.d + 4); let x = 0, k = 0; for (let e = 0; e < c; e++) { const cnt = dv.getUint32(B.stts.d + 8 + e * 8), d = dv.getUint32(B.stts.d + 12 + e * 8); for (let j = 0; j < cnt && k < N; j++) { dts[k] = x; durs[k] = d; x += d; k++; } } }
+    if (B.ctts) { const ver = u8[B.ctts.d], c = dv.getUint32(B.ctts.d + 4); let k = 0; for (let e = 0; e < c; e++) { const cnt = dv.getUint32(B.ctts.d + 8 + e * 8), o = ver ? dv.getInt32(B.ctts.d + 12 + e * 8) : dv.getUint32(B.ctts.d + 12 + e * 8); for (let j = 0; j < cnt && k < N; j++) cto[k++] = o; } }
+    let keys = null; if (B.stss) { keys = new Set(); const c = dv.getUint32(B.stss.d + 4); for (let k = 0; k < c; k++) keys.add(dv.getUint32(B.stss.d + 8 + k * 4) - 1); }
+    t.samples = [];
+    for (let k = 0; k < N; k++) t.samples.push({ dts: dts[k], pts: dts[k] + cto[k], dur: durs[k], size: sizes[k], off: offs[k], key: keys ? keys.has(k) : true });
+    tracks.push(t);
+  }
+  return { tracks, movieTS, top };
+}
+
+/* =====================================================================
+   KLV — MISB ST 0601 UAS Datalink Local Set, ST 0102 Security LS,
+   ST 1201 IMAPB. Tag table follows ST 0601.17/.18 numbering.
+   ===================================================================== */
+const UAS_KEY = [0x06, 0x0E, 0x2B, 0x34, 0x02, 0x0B, 0x01, 0x01, 0x0E, 0x01, 0x03, 0x01, 0x01, 0x00, 0x00, 0x00];
+const UAS_URN = 'urn:smpte:ul:060E2B34.020B0101.0E010301.01000000';
+
+const mU = (min, max) => b => min + readU(b) * (max - min) / (2 ** (8 * b.length) - 1);
+const mS = r => b => { const v = readS(b); return v === -(2 ** (8 * b.length - 1)) ? null : v * r / (2 ** (8 * b.length - 1) - 1); };
+const mUint = b => readU(b);
+const mSint = b => readS(b);
+const mStr = b => str(b);
+const mTS = b => readU(b);
+const mHex = b => hex(b, 64).trim();
+function mIMAPB(min, max) {
+  return b => {
+    if (!b.length) return null;
+    const L = b.length, bPow = Math.ceil(Math.log2(max - min)), dPow = 8 * L - 1 - bPow;
+    const sF = 2 ** dPow, sR = 2 ** -dPow;
+    const zOff = (min < 0 && max > 0) ? sF * min - Math.floor(sF * min) : 0;
+    return sR * (readU(b) - zOff) + min;
+  };
+}
+const ENUM = {
+  63: ['Ultranarrow', 'Narrow', 'Medium', 'Wide', 'Ultrawide', 'Narrow Medium', '2x Ultranarrow', '4x Ultranarrow', 'Continuous Zoom'],
+  77: ['Other', 'Operational', 'Training', 'Exercise', 'Maintenance', 'Test'],
+  34: ['Detector off', 'No icing detected', 'Icing detected'],
+};
+// [tag, key, name, decoder, units]
+const TAGS = [
+  [1, 'checksum', 'Checksum', mUint, ''],
+  [2, 'ts', 'Precision Time Stamp', mTS, 'µs'],
+  [3, 'mission', 'Mission ID', mStr, ''],
+  [4, 'tail', 'Platform Tail Number', mStr, ''],
+  [5, 'platHdg', 'Platform Heading Angle', mU(0, 360), '°'],
+  [6, 'platPitch', 'Platform Pitch Angle', mS(20), '°'],
+  [7, 'platRoll', 'Platform Roll Angle', mS(50), '°'],
+  [8, 'tas', 'Platform True Airspeed', mUint, 'm/s'],
+  [9, 'ias', 'Platform Indicated Airspeed', mUint, 'm/s'],
+  [10, 'platform', 'Platform Designation', mStr, ''],
+  [11, 'sensor', 'Image Source Sensor', mStr, ''],
+  [12, 'coordSys', 'Image Coordinate System', mStr, ''],
+  [13, 'sensLat', 'Sensor Latitude', mS(90), '°'],
+  [14, 'sensLon', 'Sensor Longitude', mS(180), '°'],
+  [15, 'sensAlt', 'Sensor True Altitude', mU(-900, 19000), 'm MSL'],
+  [16, 'hfov', 'Sensor Horizontal FOV', mU(0, 180), '°'],
+  [17, 'vfov', 'Sensor Vertical FOV', mU(0, 180), '°'],
+  [18, 'relAz', 'Sensor Relative Azimuth', mU(0, 360), '°'],
+  [19, 'relEl', 'Sensor Relative Elevation', mS(180), '°'],
+  [20, 'relRoll', 'Sensor Relative Roll', mU(0, 360), '°'],
+  [21, 'slant', 'Slant Range', mU(0, 5e6), 'm'],
+  [22, 'tgtWidth', 'Target Width', mU(0, 10000), 'm'],
+  [23, 'fcLat', 'Frame Center Latitude', mS(90), '°'],
+  [24, 'fcLon', 'Frame Center Longitude', mS(180), '°'],
+  [25, 'fcElev', 'Frame Center Elevation', mU(-900, 19000), 'm MSL'],
+  [26, 'oc1Lat', 'Offset Corner Lat Pt 1', mS(0.075), '°'],
+  [27, 'oc1Lon', 'Offset Corner Lon Pt 1', mS(0.075), '°'],
+  [28, 'oc2Lat', 'Offset Corner Lat Pt 2', mS(0.075), '°'],
+  [29, 'oc2Lon', 'Offset Corner Lon Pt 2', mS(0.075), '°'],
+  [30, 'oc3Lat', 'Offset Corner Lat Pt 3', mS(0.075), '°'],
+  [31, 'oc3Lon', 'Offset Corner Lon Pt 3', mS(0.075), '°'],
+  [32, 'oc4Lat', 'Offset Corner Lat Pt 4', mS(0.075), '°'],
+  [33, 'oc4Lon', 'Offset Corner Lon Pt 4', mS(0.075), '°'],
+  [34, 'icing', 'Icing Detected', mUint, ''],
+  [35, 'windDir', 'Wind Direction', mU(0, 360), '°'],
+  [36, 'windSpd', 'Wind Speed', mU(0, 100), 'm/s'],
+  [37, 'staticP', 'Static Pressure', mU(0, 5000), 'mbar'],
+  [38, 'densAlt', 'Density Altitude', mU(-900, 19000), 'm'],
+  [39, 'oat', 'Outside Air Temperature', mSint, '°C'],
+  [40, 'tgtLat', 'Target Location Latitude', mS(90), '°'],
+  [41, 'tgtLon', 'Target Location Longitude', mS(180), '°'],
+  [42, 'tgtElev', 'Target Location Elevation', mU(-900, 19000), 'm'],
+  [43, 'gateW', 'Target Track Gate Width', b => readU(b) * 2, 'px'],
+  [44, 'gateH', 'Target Track Gate Height', b => readU(b) * 2, 'px'],
+  [45, 'ce90', 'Target Error Estimate CE90', mU(0, 4095), 'm'],
+  [46, 'le90', 'Target Error Estimate LE90', mU(0, 4095), 'm'],
+  [47, 'genFlags', 'Generic Flag Data', mUint, ''],
+  [48, 'security', 'Security Local Set', null, ''],
+  [49, 'diffP', 'Differential Pressure', mU(0, 5000), 'mbar'],
+  [50, 'aoa', 'Platform Angle of Attack', mS(20), '°'],
+  [51, 'vspd', 'Platform Vertical Speed', mS(180), 'm/s'],
+  [52, 'sideslip', 'Platform Sideslip Angle', mS(20), '°'],
+  [53, 'afBaro', 'Airfield Barometric Pressure', mU(0, 5000), 'mbar'],
+  [54, 'afElev', 'Airfield Elevation', mU(-900, 19000), 'm'],
+  [55, 'rh', 'Relative Humidity', mU(0, 100), '%'],
+  [56, 'gs', 'Platform Ground Speed', mUint, 'm/s'],
+  [57, 'groundRange', 'Ground Range', mU(0, 5e6), 'm'],
+  [58, 'fuel', 'Platform Fuel Remaining', mU(0, 10000), 'kg'],
+  [59, 'callsign', 'Platform Call Sign', mStr, ''],
+  [60, 'wpnLoad', 'Weapon Load', mUint, ''],
+  [61, 'wpnFired', 'Weapon Fired', mUint, ''],
+  [62, 'laserPrf', 'Laser PRF Code', mUint, ''],
+  [63, 'fovName', 'Sensor Field of View Name', mUint, ''],
+  [64, 'magHdg', 'Platform Magnetic Heading', mU(0, 360), '°'],
+  [65, 'version', 'UAS Datalink LS Version', mUint, ''],
+  [67, 'altPlatLat', 'Alternate Platform Latitude', mS(90), '°'],
+  [68, 'altPlatLon', 'Alternate Platform Longitude', mS(180), '°'],
+  [69, 'altPlatAlt', 'Alternate Platform Altitude', mU(-900, 19000), 'm'],
+  [70, 'altPlatName', 'Alternate Platform Name', mStr, ''],
+  [71, 'altPlatHdg', 'Alternate Platform Heading', mU(0, 360), '°'],
+  [72, 'eventStart', 'Event Start Time UTC', mTS, 'µs'],
+  [73, 'rvt', 'RVT Local Set', mHex, ''],
+  [74, 'vmti', 'VMTI Local Set', mHex, ''],
+  [75, 'sensHAE', 'Sensor Ellipsoid Height', mU(-900, 19000), 'm HAE'],
+  [76, 'altPlatHAE', 'Alternate Platform Ellipsoid Height', mU(-900, 19000), 'm HAE'],
+  [77, 'opMode', 'Operational Mode', mUint, ''],
+  [78, 'fcHAE', 'Frame Center Height Above Ellipsoid', mU(-900, 19000), 'm HAE'],
+  [79, 'velN', 'Sensor North Velocity', mS(327), 'm/s'],
+  [80, 'velE', 'Sensor East Velocity', mS(327), 'm/s'],
+  [81, 'horizon', 'Image Horizon Pixel Pack', mHex, ''],
+  [82, 'c1Lat', 'Corner Latitude Pt 1 (Full)', mS(90), '°'],
+  [83, 'c1Lon', 'Corner Longitude Pt 1 (Full)', mS(180), '°'],
+  [84, 'c2Lat', 'Corner Latitude Pt 2 (Full)', mS(90), '°'],
+  [85, 'c2Lon', 'Corner Longitude Pt 2 (Full)', mS(180), '°'],
+  [86, 'c3Lat', 'Corner Latitude Pt 3 (Full)', mS(90), '°'],
+  [87, 'c3Lon', 'Corner Longitude Pt 3 (Full)', mS(180), '°'],
+  [88, 'c4Lat', 'Corner Latitude Pt 4 (Full)', mS(90), '°'],
+  [89, 'c4Lon', 'Corner Longitude Pt 4 (Full)', mS(180), '°'],
+  [90, 'platPitchF', 'Platform Pitch Angle (Full)', mS(90), '°'],
+  [91, 'platRollF', 'Platform Roll Angle (Full)', mS(90), '°'],
+  [92, 'aoaF', 'Platform Angle of Attack (Full)', mS(90), '°'],
+  [93, 'sideslipF', 'Platform Sideslip Angle (Full)', mS(180), '°'],
+  [94, 'miis', 'MIIS Core Identifier', mHex, ''],
+  [95, 'sar', 'SAR Motion Imagery LS', mHex, ''],
+  [96, 'tgtWidthX', 'Target Width Extended', mIMAPB(0, 1500000), 'm'],
+  [97, 'rangeImg', 'Range Image LS', mHex, ''],
+  [98, 'geoReg', 'Geo-Registration LS', mHex, ''],
+  [99, 'composite', 'Composite Imaging LS', mHex, ''],
+  [100, 'segment', 'Segment LS', mHex, ''],
+  [101, 'amend', 'Amend LS', mHex, ''],
+  [102, 'sdcc', 'SDCC-FLP', mHex, ''],
+  [103, 'densAltX', 'Density Altitude Extended', mIMAPB(-900, 40000), 'm'],
+  [104, 'sensHAEX', 'Sensor Ellipsoid Height Extended', mIMAPB(-900, 40000), 'm HAE'],
+  [105, 'altPlatHAEX', 'Alternate Platform Ellipsoid Height Ext', mIMAPB(-900, 40000), 'm HAE'],
+  [106, 'streamDesig', 'Stream Designator', mStr, ''],
+  [107, 'opBase', 'Operational Base', mStr, ''],
+  [108, 'broadcast', 'Broadcast Source', mStr, ''],
+  [109, 'rangeRecov', 'Range To Recovery Location', mIMAPB(0, 21000), 'km'],
+  [110, 'airborne', 'Time Airborne', mUint, 's'],
+  [111, 'propRpm', 'Propulsion Unit Speed', mUint, 'rpm'],
+  [112, 'course', 'Platform Course Angle', mIMAPB(0, 360), '°'],
+  [113, 'agl', 'Altitude AGL', mIMAPB(-900, 40000), 'm'],
+  [114, 'radarAlt', 'Radar Altimeter', mIMAPB(-900, 40000), 'm'],
+  [115, 'ctrlCmd', 'Control Command', mHex, ''],
+  [116, 'ctrlVerify', 'Control Command Verification List', mHex, ''],
+  [117, 'azRate', 'Sensor Azimuth Rate', mIMAPB(-1000, 1000), '°/s'],
+  [118, 'elRate', 'Sensor Elevation Rate', mIMAPB(-1000, 1000), '°/s'],
+  [119, 'rollRate', 'Sensor Roll Rate', mIMAPB(-1000, 1000), '°/s'],
+  [120, 'storPct', 'On-board MI Storage Percent Full', mIMAPB(0, 100), '%'],
+  [121, 'activeWl', 'Active Wavelength List', mHex, ''],
+  [122, 'countries', 'Country Codes', mHex, ''],
+  [123, 'navsats', 'Number of NAVSATs in View', mUint, ''],
+  [124, 'posMethod', 'Positioning Method Source', mUint, ''],
+  [125, 'platStatus', 'Platform Status', mUint, ''],
+  [126, 'sensCtrl', 'Sensor Control Mode', mUint, ''],
+  [127, 'frPack', 'Sensor Frame Rate Pack', mHex, ''],
+  [128, 'wavelengths', 'Wavelengths List', mHex, ''],
+  [129, 'targetId', 'Target ID', mStr, ''],
+  [130, 'airbases', 'Airbase Locations', mHex, ''],
+  [131, 'takeoff', 'Take-off Time', mTS, 'µs'],
+  [132, 'txFreq', 'Transmission Frequency', mIMAPB(1, 99999), 'MHz'],
+  [133, 'storCap', 'On-board MI Storage Capacity', mUint, 'GB'],
+  [134, 'zoom', 'Zoom Percentage', mIMAPB(0, 100), '%'],
+  [135, 'commsMethod', 'Communications Method', mStr, ''],
+  [136, 'leapSec', 'Leap Seconds', mSint, 's'],
+  [137, 'corrOffset', 'Correction Offset', mSint, 'µs'],
+  [138, 'payloads', 'Payload List', mHex, ''],
+  [139, 'activePayloads', 'Active Payloads', mHex, ''],
+  [140, 'stores', 'Weapons Stores', mHex, ''],
+  [141, 'waypoints', 'Waypoint List', mHex, ''],
+  [142, 'viewDomain', 'View Domain', mHex, ''],
+  [143, 'substream', 'Metadata Substream ID', mHex, ''],
+];
+const TAG = new Map(TAGS.map(r => [r[0], r]));
+const KEYINFO = new Map(TAGS.map(r => [r[1], r]));
+
+const SEC_TAGS = { 1: 'Classification', 2: 'Country Coding Method', 3: 'Classifying Country', 4: 'SCI/SHI', 5: 'Caveats', 6: 'Releasing Instructions', 7: 'Classified By', 8: 'Derived From', 9: 'Classification Reason', 10: 'Declassification Date', 11: 'Classification & Marking System', 12: 'Object Country Coding Method', 13: 'Object Country Codes', 14: 'Classification Comments', 22: 'Version' };
+const CLASS = { 1: 'UNCLASSIFIED', 2: 'RESTRICTED', 3: 'CONFIDENTIAL', 4: 'SECRET', 5: 'TOP SECRET' };
+
+function berLen(b, i) {
+  const f = b[i]; if (f < 128) return [f, 1];
+  const n = f & 0x7F; if (n > 6 || i + n >= b.length + 1) return [-1, 1];
+  return [readU(b, i + 1, n), 1 + n];
+}
+function berOid(b, i) { let v = 0, n = 0; while (i + n < b.length) { const x = b[i + n++]; v = v * 128 + (x & 0x7F); if (!(x & 0x80)) break; } return [v, n]; }
+
+function decodeSecurity(b) {
+  const out = {}; let i = 0;
+  while (i < b.length) {
+    const [tag, tn] = berOid(b, i); i += tn;
+    const [len, ln] = berLen(b, i); i += ln;
+    if (len < 0 || i + len > b.length) break;
+    const v = b.subarray(i, i + len); i += len;
+    if (tag === 1) out.classification = CLASS[v[0]] || ('0x' + v[0].toString(16));
+    else if (tag === 2 || tag === 12 || tag === 22) out[SEC_TAGS[tag]] = readU(v);
+    else if (tag === 13) out[SEC_TAGS[tag]] = (v.length > 1 && v[0] === 0) ? new TextDecoder('utf-16be').decode(v) : str(v);
+    else out[SEC_TAGS[tag] || ('tag ' + tag)] = str(v);
+  }
+  return out;
+}
+
+function uasChecksum(raw, upto) { let bcc = 0; for (let i = 0; i < upto; i++) bcc = (bcc + (raw[i] << (8 * ((i + 1) % 2)))) & 0xFFFF; return bcc; }
+
+/* decode one UAS LS packet (raw = full KLV incl. key) */
+function decodeUAS(raw) {
+  const [len, ln] = berLen(raw, 16);
+  const start = 16 + ln, end = Math.min(raw.length, start + len);
+  const f = {}, items = []; let csGot = null, csPos = -1;
+  let i = start;
+  while (i < end) {
+    const tpos = i;
+    const [tag, tn] = berOid(raw, i); i += tn;
+    const [l, lnn] = berLen(raw, i); i += lnn;
+    if (l < 0 || i + l > end) { items.push({ tag, name: 'Truncated item', disp: '', bad: true }); break; }
+    const v = raw.subarray(i, i + l); i += l;
+    const info = TAG.get(tag);
+    let val, disp;
+    if (tag === 1) { csGot = readU(v); csPos = tpos; }
+    if (!info) { val = null; disp = hex(v, 32).trim(); items.push({ tag, key: 't' + tag, name: 'Tag ' + tag + ' (unknown)', val, disp, units: '', len: l }); continue; }
+    if (tag === 48) { val = decodeSecurity(v); disp = Object.entries(val).map(([k, x]) => k + ': ' + x).join(' · '); }
+    else {
+      try { val = l ? info[3](v) : null; } catch (e) { val = null; }
+      if (tag === 2 || tag === 72 || tag === 131) disp = val === null ? '–' : fmtUTC(val);
+      else if (ENUM[tag] && isNum(val)) disp = (ENUM[tag][val] || val) + '';
+      else if (isNum(val)) disp = Number.isInteger(val) ? String(val) : (Math.abs(val) < 1 && /Lat|Lon/.test(info[1]) ? val.toFixed(7) : /Lat$|Lon$/.test(info[1]) ? val.toFixed(7) : val.toFixed(3));
+      else disp = val === null ? 'n/a (out of range / empty)' : String(val);
+    }
+    f[info[1]] = val;
+    items.push({ tag, key: info[1], name: info[2], val, disp, units: info[4], len: l });
+  }
+  let csOk = null, csCalc = null;
+  if (csPos >= 0) { csCalc = uasChecksum(raw, csPos + 2); csOk = csCalc === csGot; }
+  // assemble corners
+  if ([82, 83, 84, 85, 86, 87, 88, 89].every(t => isNum(f[TAG.get(t)[1]])))
+    f.corners = [[f.c1Lat, f.c1Lon], [f.c2Lat, f.c2Lon], [f.c3Lat, f.c3Lon], [f.c4Lat, f.c4Lon]];
+  else if (isNum(f.fcLat) && isNum(f.fcLon) && [26, 27, 28, 29, 30, 31, 32, 33].every(t => isNum(f[TAG.get(t)[1]])))
+    f.corners = [[f.fcLat + f.oc1Lat, f.fcLon + f.oc1Lon], [f.fcLat + f.oc2Lat, f.fcLon + f.oc2Lon], [f.fcLat + f.oc3Lat, f.fcLon + f.oc3Lon], [f.fcLat + f.oc4Lat, f.fcLon + f.oc4Lon]];
+  if (isNum(f.platPitchF)) f.platPitch = f.platPitchF;
+  if (isNum(f.platRollF)) f.platRoll = f.platRollF;
+  if (!isNum(f.sensHAE) && isNum(f.sensHAEX)) f.sensHAE = f.sensHAEX;
+  return { f, items, csOk, csGot, csCalc, version: f.version };
+}
+
+/* find UAS LS packets in a byte stream; returns {packets:[{pos,raw}], rest} */
+function scanKLV(buf) {
+  const out = []; let i = 0, rest = null; const n = buf.length;
+  while (i + 17 <= n) {
+    if (buf[i] !== 0x06 || buf[i + 1] !== 0x0E || buf[i + 2] !== 0x2B || buf[i + 3] !== 0x34) { i++; continue; }
+    let ok = true;
+    for (let k = 4; k < 16; k++) if (k !== 7 && buf[i + k] !== UAS_KEY[k]) { ok = false; break; }
+    if (!ok) { i++; continue; }
+    const [len, ln] = berLen(buf, i + 16);
+    if (len < 0) { i++; continue; }
+    const tot = 16 + ln + len;
+    if (i + tot > n) { rest = buf.slice(i); break; }
+    out.push({ pos: i, raw: buf.slice(i, i + tot) });
+    i += tot;
+  }
+  return { packets: out, rest };
+}
+
+/* =====================================================================
+   GEOMETRY — sensor model, terrain ray-casting, DEM, interpolation, NIIRS
+   Conventions (ST 0601): NED local frame, body x fwd / y right / z down.
+   R = Rz(platHdg)·Ry(platPitch)·Rx(platRoll) · Rz(relAz)·Ry(relEl)·Rx(relRoll)
+   Image ray for normalised pixel (u,v) ∈ [-1,1]: [1, u·tan(HFOV/2), v·tan(VFOV/2)]
+   (u right, v down). Corner order UL, UR, LR, LL = ST 0601 points 1..4.
+   ===================================================================== */
+const RE = 6371008.8;
+const mpdLat = lat => 111132.92 - 559.82 * Math.cos(2 * lat * D2R) + 1.175 * Math.cos(4 * lat * D2R);
+const mpdLon = lat => 111412.84 * Math.cos(lat * D2R) - 93.5 * Math.cos(3 * lat * D2R);
+function rz(a) { const c = Math.cos(a), s = Math.sin(a); return [c, -s, 0, s, c, 0, 0, 0, 1]; }
+function ry(a) { const c = Math.cos(a), s = Math.sin(a); return [c, 0, s, 0, 1, 0, -s, 0, c]; }
+function rx(a) { const c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, c, -s, 0, s, c]; }
+function m3(A, B) { const C = new Array(9); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i * 3 + j] = A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j]; return C; }
+const mv3 = (A, v) => [A[0] * v[0] + A[1] * v[1] + A[2] * v[2], A[3] * v[0] + A[4] * v[1] + A[5] * v[2], A[6] * v[0] + A[7] * v[1] + A[8] * v[2]];
+const mtv3 = (A, v) => [A[0] * v[0] + A[3] * v[1] + A[6] * v[2], A[1] * v[0] + A[4] * v[1] + A[7] * v[2], A[2] * v[0] + A[5] * v[1] + A[8] * v[2]];
+const norm3 = v => { const L = Math.hypot(v[0], v[1], v[2]); return [v[0] / L, v[1] / L, v[2] / L]; };
+
+const CFG = {
+  footprint: 'auto',        // auto | computed | metadata
+  interp: 'linear',         // nearest | linear | spline
+  holdMax: 5,               // s: carry-forward limit for sparse tags
+  klvOffset: 0,             // s: metadata time shift
+  geoidOffset: 0,           // m: N such that MSL = HAE − N (used when only HAE exists)
+  flatElev: 0,              // m: fallback ground height
+  maxRange: 30000,          // m: horizon clip
+  imgW: 1280, imgH: 720,    // used when video size unknown
+  giqe: 4, rer: 0.9, hgain: 1.0, gsnr: 0.1, snr: 50,
+  basemap: 'esri', customUrl: '', tileCors: true,
+  demMode: 'flat', demUrl: 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png', demZoom: 12,
+  orthoGrid: 16, orthoAlpha: 0.85, histStep: 2,
+};
+
+/* ---------------- DEM ---------------- */
+const DEM = {
+  tiles: new Map(), asc: null, pending: 0, loaded: 0, failed: 0, minElev: Infinity, maxElev: -Infinity, onUpdate: null,
+  active() { return (CFG.demMode === 'terrarium') || (CFG.demMode === 'asc' && !!this.asc); },
+  reset() { this.tiles.clear(); this.pending = this.loaded = this.failed = 0; this.minElev = Infinity; this.maxElev = -Infinity; if (this.asc) this._mm(this.asc.data, this.asc.nodata); },
+  _mm(arr, nod) { for (let i = 0; i < arr.length; i++) { const v = arr[i]; if (v === nod || !isFinite(v)) continue; if (v < this.minElev) this.minElev = v; if (v > this.maxElev) this.maxElev = v; } },
+  sample(lat, lon) {
+    if (CFG.demMode === 'asc' && this.asc) {
+      const a = this.asc; const c = (lon - a.x0) / a.cell - 0.5, r = (a.ytop - lat) / a.cell - 0.5;
+      if (c < 0 || r < 0 || c > a.ncols - 1 || r > a.nrows - 1) return null;
+      const c0 = Math.floor(c), r0 = Math.floor(r), c1 = Math.min(c0 + 1, a.ncols - 1), r1 = Math.min(r0 + 1, a.nrows - 1), fc = c - c0, fr = r - r0;
+      const g = (rr, cc) => a.data[rr * a.ncols + cc];
+      const v00 = g(r0, c0), v01 = g(r0, c1), v10 = g(r1, c0), v11 = g(r1, c1);
+      if ([v00, v01, v10, v11].some(v => v === a.nodata)) return v00 === a.nodata ? null : v00;
+      return lerp(lerp(v00, v01, fc), lerp(v10, v11, fc), fr);
+    }
+    if (CFG.demMode !== 'terrarium') return null;
+    const z = CFG.demZoom, sc = 2 ** z;
+    const x = (lon + 180) / 360 * sc, sl = Math.sin(lat * D2R);
+    const y = (0.5 - Math.log((1 + sl) / (1 - sl)) / (4 * Math.PI)) * sc;
+    const tx = Math.floor(x), ty = Math.floor(y);
+    const t = this.tiles.get(z + '/' + tx + '/' + ty);
+    if (!t) { this.load(z, tx, ty); return null; }
+    if (!t.data) return null;
+    const px = clamp((x - tx) * 256 - 0.5, 0, 254.999), py = clamp((y - ty) * 256 - 0.5, 0, 254.999);
+    const c0 = px | 0, r0 = py | 0, fc = px - c0, fr = py - r0, d = t.data;
+    return lerp(lerp(d[r0 * 256 + c0], d[r0 * 256 + c0 + 1], fc), lerp(d[(r0 + 1) * 256 + c0], d[(r0 + 1) * 256 + c0 + 1], fc), fr);
+  },
+  load(z, x, y) {
+    const k = z + '/' + x + '/' + y;
+    if (this.tiles.has(k)) return;
+    const t = { data: null }; this.tiles.set(k, t);
+    if (this.pending > 48) { this.tiles.delete(k); return; }
+    this.pending++;
+    const img = new Image(); img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      this.pending--;
+      try {
+        const c = document.createElement('canvas'); c.width = c.height = 256;
+        const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0);
+        const p = g.getImageData(0, 0, 256, 256).data, d = new Float32Array(65536);
+        for (let i = 0; i < 65536; i++) d[i] = p[i * 4] * 256 + p[i * 4 + 1] + p[i * 4 + 2] / 256 - 32768;
+        t.data = d; this.loaded++; this._mm(d, NaN);
+      } catch (e) { this.failed++; t.err = String(e); }
+      this.onUpdate && this.onUpdate();
+    };
+    img.onerror = () => { this.pending--; this.failed++; t.err = 'load'; this.onUpdate && this.onUpdate(); };
+    img.src = CFG.demUrl.replace('{z}', z).replace('{x}', x).replace('{y}', y);
+  },
+  preload(bbox) { // [minLat,minLon,maxLat,maxLon]
+    if (CFG.demMode !== 'terrarium' || !bbox) return 0;
+    const z = CFG.demZoom, sc = 2 ** z;
+    const tx = lon => Math.floor((lon + 180) / 360 * sc);
+    const ty = lat => { const s = Math.sin(lat * D2R); return Math.floor((0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * sc); };
+    const x0 = tx(bbox[1]), x1 = tx(bbox[3]), y0 = ty(bbox[2]), y1 = ty(bbox[0]);
+    const n = (x1 - x0 + 1) * (y1 - y0 + 1);
+    if (n > 144) return -n;
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) this.load(z, x, y);
+    return n;
+  },
+  parseASC(text) {
+    const lines = text.split(/\r?\n/); const hd = {}; let i = 0;
+    for (; i < lines.length; i++) {
+      const m = lines[i].trim().match(/^([a-zA-Z_]+)\s+(\S+)/);
+      if (!m || !/^(ncols|nrows|xllcorner|yllcorner|xllcenter|yllcenter|cellsize|nodata_value)$/i.test(m[1])) break;
+      hd[m[1].toLowerCase()] = parseFloat(m[2]);
+    }
+    const ncols = hd.ncols, nrows = hd.nrows, cell = hd.cellsize;
+    if (!ncols || !nrows || !cell) throw new Error('Not an ESRI ASCII grid');
+    let x0 = hd.xllcorner, yb = hd.yllcorner;
+    if (x0 === undefined) { x0 = hd.xllcenter - cell / 2; yb = hd.yllcenter - cell / 2; }
+    const data = new Float32Array(ncols * nrows); let k = 0;
+    for (; i < lines.length && k < data.length; i++) { const parts = lines[i].trim().split(/\s+/); for (const p of parts) if (p !== '' && k < data.length) data[k++] = parseFloat(p); }
+    const nodata = hd.nodata_value ?? -9999;
+    this.asc = { ncols, nrows, cell, x0, ytop: yb + nrows * cell, data, nodata };
+    if (Math.abs(x0) > 360 || Math.abs(yb) > 90) throw new Error('ASCII grid must be geographic (decimal degrees, WGS84)');
+    this.minElev = Infinity; this.maxElev = -Infinity; this._mm(data, nodata);
+    return this.asc;
+  },
+};
+
+/* ---------------- sensor model ---------------- */
+function sensAltMSL(st) {
+  if (isNum(st.sensAlt)) return st.sensAlt;
+  if (isNum(st.sensHAE)) return st.sensHAE - CFG.geoidOffset;
+  return null;
+}
+function refElev(st) {
+  if (isNum(st.fcElev)) return st.fcElev;
+  if (isNum(st.fcHAE)) return st.fcHAE - CFG.geoidOffset;
+  return CFG.flatElev;
+}
+function imgSize() { return [S.video && S.video.width || CFG.imgW, S.video && S.video.height || CFG.imgH]; }
+function vfovOf(st) { if (isNum(st.vfov) && st.vfov > 0) return st.vfov; const [w, h] = imgSize(); return isNum(st.hfov) ? 2 * Math.atan(Math.tan(st.hfov * D2R / 2) * h / w) * R2D : null; }
+function hasPose(st) { return st && isNum(st.sensLat) && isNum(st.sensLon) && isNum(sensAltMSL(st)) && isNum(st.platHdg) && isNum(st.relAz) && isNum(st.relEl) && isNum(st.hfov) && st.hfov > 0; }
+function sensorRot(st) {
+  const P = m3(m3(rz(st.platHdg * D2R), ry((st.platPitch || 0) * D2R)), rx((st.platRoll || 0) * D2R));
+  const Q = m3(m3(rz(st.relAz * D2R), ry(st.relEl * D2R)), rx((st.relRoll || 0) * D2R));
+  return m3(P, Q);
+}
+function pixelDir(st, R, u, v) {
+  const th = Math.tan(st.hfov * D2R / 2), tv = Math.tan(vfovOf(st) * D2R / 2);
+  return norm3(mv3(R, [1, u * th, v * tv]));
+}
+function castRay(st, d) {
+  const lat0 = st.sensLat, lon0 = st.sensLon, alt = sensAltMSL(st);
+  const mLat = mpdLat(lat0), mLon = mpdLon(lat0), flatH = refElev(st), maxR = CFG.maxRange;
+  const at = r => { const n = d[0] * r, e = d[1] * r; return [lat0 + n / mLat, lon0 + e / mLon, alt - d[2] * r + (n * n + e * e) / (2 * RE)]; };
+  const horizon = () => { const hz = Math.hypot(d[0], d[1]) || 1; const r = maxR; const n = d[0] / hz * r, e = d[1] / hz * r; return { lat: lat0 + n / mLat, lon: lon0 + e / mLon, h: flatH, r, horizon: true }; };
+  if (!DEM.active()) {
+    if (d[2] <= 1e-9) return horizon();
+    const r = (alt - flatH) / d[2];
+    if (r < 0 || r > maxR) return horizon();
+    const p = at(r); return { lat: p[0], lon: p[1], h: flatH, r };
+  }
+  const hiE = Math.max(isFinite(DEM.maxElev) ? DEM.maxElev : flatH, flatH) + 30;
+  const loE = Math.min(isFinite(DEM.minElev) ? DEM.minElev : flatH, flatH) - 30;
+  const r0 = d[2] > 1e-9 ? Math.max(0, (alt - hiE) / d[2]) : 0;
+  const r1 = d[2] > 1e-9 ? Math.min(maxR, (alt - loE) / d[2] + 60) : maxR;
+  if (r0 >= r1) return horizon();
+  const step = clamp((r1 - r0) / 250, 4, 60);
+  const dh = r => { const p = at(r); const ter = DEM.sample(p[0], p[1]); const tH = ter === null ? flatH : ter; return [p[2] - tH, p, tH]; };
+  let prev = r0, [hp] = dh(r0);
+  if (hp <= 0) { const [, p, tH] = dh(r0); return { lat: p[0], lon: p[1], h: tH, r: r0 }; }
+  for (let r = r0 + step; r <= r1 + step; r += step) {
+    const rr = Math.min(r, r1); const [hc] = dh(rr);
+    if (hc <= 0) {
+      let a = prev, b = rr;
+      for (let k = 0; k < 14; k++) { const m = (a + b) / 2; if (dh(m)[0] > 0) a = m; else b = m; }
+      const [, p, tH] = dh(b); return { lat: p[0], lon: p[1], h: tH, r: b };
+    }
+    prev = rr; if (rr >= r1) break;
+  }
+  return horizon();
+}
+/* project world point into normalised image coords (u,v) — null if behind */
+function worldToImage(st, R, lat, lon, hgt) {
+  const alt = sensAltMSL(st), mLat = mpdLat(st.sensLat), mLon = mpdLon(st.sensLat);
+  const n = (lat - st.sensLat) * mLat, e = (lon - st.sensLon) * mLon;
+  const dn = alt - hgt + (n * n + e * e) / (2 * RE);
+  const b = mtv3(R, [n, e, dn]);
+  if (b[0] <= 1e-6) return null;
+  const th = Math.tan(st.hfov * D2R / 2), tv = Math.tan(vfovOf(st) * D2R / 2);
+  return [b[1] / b[0] / th, b[2] / b[0] / tv];
+}
+function groundElev(lat, lon, st) { const v = DEM.active() ? DEM.sample(lat, lon) : null; return v === null ? refElev(st || {}) : v; }
+
+/* ---------------- homography (metadata corners) ---------------- */
+function solveLin(A, b) {
+  const n = b.length, M = A.map((r, i) => [...r, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c; for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    if (Math.abs(M[p][c]) < 1e-12) return null;
+    [M[c], M[p]] = [M[p], M[c]];
+    for (let r = 0; r < n; r++) if (r !== c) { const f = M[r][c] / M[c][c]; for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k]; }
+  }
+  return M.map((r, i) => r[n] / r[i]);
+}
+function homography(src, dst) { // 4 pts each [x,y]
+  const A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = src[i], [X, Y] = dst[i];
+    A.push([x, y, 1, 0, 0, 0, -x * X, -y * X]); b.push(X);
+    A.push([0, 0, 0, x, y, 1, -x * Y, -y * Y]); b.push(Y);
+  }
+  const s = solveLin(A, b); return s ? [...s, 1] : null;
+}
+const hApply = (H, x, y) => { const w = H[6] * x + H[7] * y + H[8]; return [(H[0] * x + H[1] * y + H[2]) / w, (H[3] * x + H[4] * y + H[5]) / w]; };
+function hInv(H) {
+  const [a, b, c, d, e, f, g, hh, i] = H, A = e * i - f * hh, B = -(d * i - f * g), C = d * hh - e * g, det = a * A + b * B + c * C;
+  if (Math.abs(det) < 1e-15) return null;
+  return [A / det, -(b * i - c * hh) / det, (b * f - c * e) / det, B / det, (a * i - c * g) / det, -(a * f - c * d) / det, C / det, -(a * hh - b * g) / det, (a * e - b * d) / det];
+}
+const CORNER_UV = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+function cornerModel(st) { // image(u,v) <-> local metres around corner centroid
+  if (!st.corners) return null;
+  const lat0 = st.corners.reduce((s, c) => s + c[0], 0) / 4, lon0 = st.corners.reduce((s, c) => s + c[1], 0) / 4;
+  const mLat = mpdLat(lat0), mLon = mpdLon(lat0);
+  const dst = st.corners.map(c => [(c[1] - lon0) * mLon, (c[0] - lat0) * mLat]);
+  const H = homography(CORNER_UV, dst); if (!H) return null;
+  return { H, Hi: hInv(H), lat0, lon0, mLat, mLon };
+}
+
+/* ---------------- per-state geometry ---------------- */
+function useComputed(st) {
+  if (CFG.footprint === 'metadata') return false;
+  if (CFG.footprint === 'computed') return hasPose(st);
+  return hasPose(st);
+}
+/* ground point for normalised pixel; returns {lat,lon,h,horizon} */
+function makeProjector(st) {
+  if (useComputed(st)) {
+    const R = sensorRot(st);
+    return {
+      kind: 'pose', R,
+      toGround: (u, v) => castRay(st, pixelDir(st, R, u, v)),
+      toImage: (lat, lon, hgt) => worldToImage(st, R, lat, lon, hgt),
+    };
+  }
+  const cm = cornerModel(st); if (!cm) return null;
+  return {
+    kind: 'corners',
+    toGround: (u, v) => { const [x, y] = hApply(cm.H, u, v); const lat = cm.lat0 + y / cm.mLat, lon = cm.lon0 + x / cm.mLon; return { lat, lon, h: groundElev(lat, lon, st) }; },
+    toImage: (lat, lon) => cm.Hi ? hApply(cm.Hi, (lon - cm.lon0) * cm.mLon, (lat - cm.lat0) * cm.mLat) : null,
+  };
+}
+function footprint(st, per = 1) {
+  const P = makeProjector(st); if (!P) return null;
+  const pts = [];
+  for (let k = 0; k < 4; k++) {
+    const [u0, v0] = CORNER_UV[k], [u1, v1] = CORNER_UV[(k + 1) % 4];
+    for (let j = 0; j < per; j++) { const f = j / per; pts.push(P.toGround(lerp(u0, u1, f), lerp(v0, v1, f))); }
+  }
+  return { pts, kind: P.kind, center: P.toGround(0, 0) };
+}
+
+/* ---------------- NIIRS (GIQE) ---------------- */
+function giqe(gsdM) {
+  if (!isNum(gsdM) || gsdM <= 0) return null;
+  const g = gsdM * 39.3701, rer = CFG.rer;
+  if (CFG.giqe === 5) {
+    const snr = CFG.snr, l = Math.log10(rer);
+    return 9.57 - 3.32 * Math.log10(g) + 3.32 * (1 - Math.exp(-1.9 / snr)) * l - 2 * l ** 4 - 1.8 / snr;
+  }
+  const a = rer >= 0.9 ? 3.32 : 3.16, b = rer >= 0.9 ? 1.559 : 2.817;
+  return 10.251 - a * Math.log10(g) + b * Math.log10(rer) - 0.656 * CFG.hgain - 0.344 * CFG.gsnr;
+}
+/* viewing geometry from sensor to a ground point */
+function viewGeom(st, lat, lon, hgt) {
+  const alt = sensAltMSL(st);
+  if (!isNum(alt) || !isNum(st.sensLat)) return null;
+  const mLat = mpdLat(st.sensLat), mLon = mpdLon(st.sensLat);
+  const n = (lat - st.sensLat) * mLat, e = (lon - st.sensLon) * mLon, hz = Math.hypot(n, e);
+  const down = alt - hgt + hz * hz / (2 * RE);
+  const slant = Math.hypot(hz, down), graz = Math.atan2(down, hz) * R2D;
+  const lookFrom = wrap360(Math.atan2(-e, -n) * R2D);
+  let gsd = null, niirs = null;
+  const [W, H] = imgSize(), vf = vfovOf(st);
+  if (isNum(st.hfov) && isNum(vf) && graz > 0.5) {
+    const gx = slant * 2 * Math.tan(st.hfov * D2R / 2) / W, gy = slant * 2 * Math.tan(vf * D2R / 2) / H / Math.sin(graz * D2R);
+    gsd = Math.sqrt(gx * gy); niirs = giqe(gsd);
+  }
+  return { slant, graz, lookFrom, gsd, niirs, ground: hz };
+}
+
+/* ---------------- metadata track & interpolation ---------------- */
+const ANG_KEYS = new Set(['platHdg', 'relAz', 'relRoll', 'windDir', 'magHdg', 'course', 'altPlatHdg']);
+const LON_KEYS = new Set(['sensLon', 'fcLon', 'tgtLon', 'altPlatLon']);
+const SPLINE_KEYS = new Set(['sensLat', 'sensLon', 'sensAlt', 'sensHAE', 'fcLat', 'fcLon']);
+class Track {
+  constructor(recs) {
+    this.recs = recs.slice().sort((a, b) => a.t - b.t);
+    const last = {}, lastT = {};
+    this.keys = new Set();
+    for (const r of this.recs) for (const k in r.f) if (isNum(r.f[k]) || (k === 'corners' && r.f[k])) this.keys.add(k);
+    for (const r of this.recs) {
+      const g = {};
+      for (const k in r.f) { const v = r.f[k]; if (v !== null && v !== undefined) { last[k] = v; lastT[k] = r.t; } }
+      for (const k in last) if (r.t - lastT[k] <= CFG.holdMax) g[k] = last[k];
+      r.g = g;
+    }
+    // back-fill leading gaps (keys first seen within holdMax of the start)
+    const firstSeen = {};
+    for (const r of this.recs) for (const k in r.g) if (!(k in firstSeen)) firstSeen[k] = r;
+    for (const k in firstSeen) { const fr = firstSeen[k]; for (const r of this.recs) { if (r === fr) break; if (fr.t - r.t <= CFG.holdMax) r.g[k] = fr.g[k]; } }
+    this.t0 = this.recs.length ? this.recs[0].t : 0;
+    this.t1 = this.recs.length ? this.recs[this.recs.length - 1].t : 0;
+  }
+  idx(t) { return bsearchLE(this.recs, t, r => r.t); }
+  at(t) {
+    const R = this.recs, n = R.length; if (!n) return null;
+    let i = this.idx(t);
+    if (i < 0) return Object.assign({ t, _i: 0, _f: 0 }, R[0].g);
+    if (i >= n - 1 || CFG.interp === 'nearest') {
+      if (CFG.interp === 'nearest' && i < n - 1 && t - R[i].t > R[i + 1].t - t) i++;
+      return Object.assign({ t, _i: i, _f: 0 }, R[i].g);
+    }
+    const a = R[i].g, b = R[i + 1].g, dt = R[i + 1].t - R[i].t, f = dt > 0 ? (t - R[i].t) / dt : 0;
+    const out = { t, _i: i, _f: f };
+    const pa = i > 0 ? R[i - 1].g : a, pb = i + 2 < n ? R[i + 2].g : b;
+    for (const k in a) {
+      const va = a[k], vb = b[k];
+      if (k === 'corners') { out.corners = vb ? va.map((c, j) => [lerp(c[0], vb[j][0], f), lonLerp(c[1], vb[j][1], f)]) : va; continue; }
+      if (!isNum(va)) { out[k] = f < 0.5 || vb === undefined ? va : vb; continue; }
+      if (!isNum(vb)) { out[k] = va; continue; }
+      if (ANG_KEYS.has(k)) out[k] = angLerp(va, vb, f);
+      else if (CFG.interp === 'spline' && SPLINE_KEYS.has(k) && isNum(pa[k]) && isNum(pb[k])) out[k] = catmull(pa[k], va, vb, pb[k], f);
+      else if (LON_KEYS.has(k)) out[k] = lonLerp(va, vb, f);
+      else out[k] = lerp(va, vb, f);
+    }
+    if (isNum(a.ts) && isNum(b.ts)) out.ts = a.ts + (b.ts - a.ts) * f;
+    return out;
+  }
+}
+function lonLerp(a, b, f) { let d = b - a; if (d > 180) d -= 360; if (d < -180) d += 360; let v = a + d * f; if (v > 180) v -= 360; if (v < -180) v += 360; return v; }
+function catmull(p0, p1, p2, p3, t) { const t2 = t * t, t3 = t2 * t; return 0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3); }
+
+function pointInPoly(lat, lon, poly) {
+  let ins = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [yi, xi] = poly[i], [yj, xj] = poly[j];
+    if (((yi > lat) !== (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)) ins = !ins;
+  }
+  return ins;
+}
+
+/* =====================================================================
+   MUXERS
+   - MP4 (ISO BMFF, faststart): video track copied bit-exact + KLV timed
+     metadata track ('meta' handler, 'urim' sample entry carrying the UAS
+     LS UL as URN, 'cdsc' track reference to video) — the ST 1910 approach.
+   - MPEG-TS: packet-level cut from an IDR, PAT/PMT re-inserted; every PID
+     (video, KLV, audio) inside the cut is preserved untouched (ST 1402).
+   ===================================================================== */
+const enc = new TextEncoder();
+const u8a = a => Uint8Array.from(a);
+function U32(v) { return u8a([(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255]); }
+function I32(v) { return U32(v >>> 0); }
+function U16(v) { return u8a([(v >> 8) & 255, v & 255]); }
+function U64(v) { const hi = Math.floor(v / 4294967296), lo = v - hi * 4294967296; return concatU8([U32(hi), U32(lo)]); }
+const Z = n => new Uint8Array(n);
+function box(type, ...parts) {
+  const flat = parts.flat().map(p => p instanceof Uint8Array ? p : u8a(p));
+  const len = 8 + flat.reduce((s, p) => s + p.length, 0);
+  return concatU8([U32(len), enc.encode(type), ...flat]);
+}
+const fbox = (type, ver, flags, ...parts) => box(type, u8a([ver, (flags >> 16) & 255, (flags >> 8) & 255, flags & 255]), ...parts);
+const MATRIX = concatU8([U32(0x00010000), U32(0), U32(0), U32(0), U32(0x00010000), U32(0), U32(0), U32(0), U32(0x40000000)]);
+
+function avc1Entry(sps, pps, w, hh) {
+  const avcC = box('avcC', u8a([1, sps[1], sps[2], sps[3], 0xFF, 0xE1]), U16(sps.length), sps, u8a([1]), U16(pps.length), pps);
+  return box('avc1', Z(6), U16(1), Z(16), U16(w), U16(hh), U32(0x00480000), U32(0x00480000), U32(0), U16(1), Z(32), U16(0x18), U16(0xFFFF), avcC);
+}
+function urimEntry() { return box('urim', Z(6), U16(1), fbox('uri ', 0, 0, enc.encode(UAS_URN), u8a([0]))); }
+function rle(vals) { const out = []; for (const v of vals) { if (out.length && out[out.length - 1][1] === v) out[out.length - 1][0]++; else out.push([1, v]); } return out; }
+
+function stblBoxes(entry, durs, ctos, keys, sizes, offsets) {
+  const N = sizes.length, big = offsets.length && offsets[offsets.length - 1] > 0xFFFFFFF0;
+  const stts = rle(durs);
+  const parts = [
+    fbox('stsd', 0, 0, U32(1), entry),
+    fbox('stts', 0, 0, U32(stts.length), ...stts.map(([c, d]) => concatU8([U32(c), U32(d)]))),
+  ];
+  if (ctos && ctos.some(c => c !== 0)) {
+    const neg = ctos.some(c => c < 0), r = rle(ctos);
+    parts.push(fbox('ctts', neg ? 1 : 0, 0, U32(r.length), ...r.map(([c, o]) => concatU8([U32(c), neg ? I32(o) : U32(o)]))));
+  }
+  if (keys && keys.some(k => !k)) { const ks = []; keys.forEach((k, i) => k && ks.push(i + 1)); parts.push(fbox('stss', 0, 0, U32(ks.length), ...ks.map(U32))); }
+  parts.push(fbox('stsc', 0, 0, U32(1), U32(1), U32(1), U32(1)));
+  const sz = new Uint8Array(8 + 4 * N); sz.set(U32(N), 4); for (let i = 0; i < N; i++) sz.set(U32(sizes[i]), 8 + i * 4);
+  parts.push(fbox('stsz', 0, 0, sz));
+  if (big) { const a = new Uint8Array(4 + 8 * N); a.set(U32(N)); for (let i = 0; i < N; i++) a.set(U64(offsets[i]), 4 + i * 8); parts.push(fbox('co64', 0, 0, a)); }
+  else { const a = new Uint8Array(4 + 4 * N); a.set(U32(N)); for (let i = 0; i < N; i++) a.set(U32(offsets[i]), 4 + i * 4); parts.push(fbox('stco', 0, 0, a)); }
+  return box('stbl', ...parts);
+}
+function tkhd(id, durMovie, w, hh, isVideo) {
+  return fbox('tkhd', 0, 3, U32(0), U32(0), U32(id), U32(0), U32(durMovie), Z(8), U16(0), U16(0), U16(0), U16(0), MATRIX, U32(isVideo ? w * 65536 : 0), U32(isVideo ? hh * 65536 : 0));
+}
+function mdhd(ts, dur) { return fbox('mdhd', 0, 0, U32(0), U32(0), U32(ts), U32(dur), U16(0x55C4), U16(0)); }
+function hdlr(type, name) { return fbox('hdlr', 0, 0, U32(0), enc.encode(type), Z(12), enc.encode(name), u8a([0])); }
+const dinf = () => box('dinf', fbox('dref', 0, 0, U32(1), fbox('url ', 0, 1)));
+function elst(entries) { return box('edts', fbox('elst', 0, 0, U32(entries.length), ...entries.map(([d, mt]) => concatU8([U32(d), I32(mt), U16(1), U16(0)])))); }
+
+/* v: {timescale, entry, width, height, samples:[{dts,pts,data|src}]} — decode order; first must be key
+   klv: [{t (s from presentation start), raw}] */
+function writeMP4(v, klv, title) {
+  const MTS = 1000, ts = v.timescale, S0 = v.samples;
+  const dts0 = S0[0].dts, N = S0.length;
+  const durs = S0.map((s, i) => i + 1 < N ? S0[i + 1].dts - s.dts : null);
+  const md = median(durs.filter(d => d > 0)) || Math.round(ts / 30); durs[N - 1] = md;
+  for (let i = 0; i < N; i++) if (!(durs[i] > 0)) durs[i] = md;
+  const ctos = S0.map(s => s.pts - s.dts);
+  const minPts = Math.min(...S0.map(s => s.pts)), maxEnd = Math.max(...S0.map((s, i) => s.pts + durs[i]));
+  const mediaDur = S0[N - 1].dts - dts0 + durs[N - 1];
+  const presDurS = (maxEnd - minPts) / ts;
+  const vsizes = S0.map(s => (s.data || s.src).length);
+  const vkeys = S0.map(s => !!s.key);
+  // KLV track @ 90 kHz
+  const KTS = 90000, K = klv.filter(k => k.t >= -1e-6 && k.t <= presDurS + 1e-6);
+  const kTicks = K.map(k => Math.round(Math.max(0, k.t) * KTS));
+  const kDurs = K.map((k, i) => i + 1 < K.length ? Math.max(1, kTicks[i + 1] - kTicks[i]) : Math.max(1, Math.round(presDurS * KTS) - kTicks[i]));
+  const ksizes = K.map(k => k.raw.length);
+  const build = (base) => {
+    let o = base; const voffs = vsizes.map(s => { const x = o; o += s; return x; }); const koffs = ksizes.map(s => { const x = o; o += s; return x; });
+    const vEd = [[Math.round(presDurS * MTS), minPts - dts0]];
+    const vtrak = box('trak', tkhd(1, Math.round(presDurS * MTS), v.width, v.height, true), elst(vEd),
+      box('mdia', mdhd(ts, mediaDur), hdlr('vide', 'VideoHandler'),
+        box('minf', fbox('vmhd', 0, 1, Z(8)), dinf(), stblBoxes(v.entry, durs, ctos, vkeys, vsizes, voffs))));
+    const traks = [vtrak];
+    if (K.length) {
+      const kEd = []; if (kTicks[0] > 0) kEd.push([Math.round(kTicks[0] / KTS * MTS), -1]);
+      kEd.push([Math.round((kTicks[K.length - 1] + kDurs[K.length - 1] - kTicks[0]) / KTS * MTS), 0]);
+      const kd = kDurs.slice(); // media timeline starts at first sample
+      traks.push(box('trak', tkhd(2, Math.round(presDurS * MTS), 0, 0, false), box('tref', box('cdsc', U32(1))), elst(kEd),
+        box('mdia', mdhd(KTS, kd.reduce((a, b) => a + b, 0)), hdlr('meta', 'MISB ST 0601 KLV'),
+          box('minf', fbox('nmhd', 0, 0), dinf(), stblBoxes(urimEntry(), kd, null, null, ksizes, koffs)))));
+    }
+    return box('moov', fbox('mvhd', 0, 0, U32(0), U32(0), U32(MTS), U32(Math.round(presDurS * MTS)), U32(0x00010000), U16(0x0100), Z(10), MATRIX, Z(24), U32(traks.length + 1)), ...traks);
+  };
+  const ftyp = box('ftyp', enc.encode('isom'), U32(0x200), enc.encode('isomiso2avc1mp41'));
+  const dataLen = vsizes.reduce((a, b) => a + b, 0) + ksizes.reduce((a, b) => a + b, 0);
+  const large = dataLen + 8 > 0xFFFFFFFF;
+  const mdatH = large ? concatU8([U32(1), enc.encode('mdat'), U64(dataLen + 16)]) : concatU8([U32(dataLen + 8), enc.encode('mdat')]);
+  let moov = build(0);
+  moov = build(ftyp.length + moov.length + mdatH.length);
+  const parts = [ftyp, moov, mdatH, ...S0.map(s => s.data || s.src), ...K.map(k => k.raw)];
+  return new Blob(parts, { type: 'video/mp4' });
+}
+
+/* MPEG-TS cut: byte range [a,b) of the source, normalised to 188-byte packets */
+function cutTS(u8, det, a, b, pat, pmt) {
+  const parts = [];
+  if (pat) parts.push(pat); if (pmt) parts.push(pmt);
+  if (det.ps === 188) parts.push(u8.subarray(a, b));
+  else { const out = new Uint8Array(Math.ceil((b - a) / det.ps) * 188); let o = 0; for (let p = a; p + 188 <= b; p += det.ps) { out.set(u8.subarray(p, p + 188), o); o += 188; } parts.push(out.subarray(0, o)); }
+  return new Blob(parts, { type: 'video/mp2t' });
+}
+
+/* =====================================================================
+   MAP — minimal Web Mercator tile renderer on canvas
+   ===================================================================== */
+const BASEMAPS = {
+  esri: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', max: 19, attr: 'Imagery © Esri, Maxar, Earthstar Geographics' },
+  osm: { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', max: 19, attr: '© OpenStreetMap contributors' },
+  topo: { url: 'https://a.tile.opentopomap.org/{z}/{x}/{y}.png', max: 17, attr: '© OpenTopoMap (CC-BY-SA), © OpenStreetMap' },
+  custom: { url: '', max: 20, attr: 'Custom tiles' },
+  none: { url: '', max: 22, attr: 'No basemap' },
+};
+const MapV = {
+  cv: null, ctx: null, W: 0, H: 0, dpr: 1, lat: -25, lon: 134, z: 3.6, tiles: new Map(), queued: false, overlay: null, tainted: false,
+  init(cv) {
+    this.cv = cv; this.ctx = cv.getContext('2d');
+    new ResizeObserver(() => this.resize()).observe(cv.parentElement);
+    this.resize();
+  },
+  resize() {
+    const r = this.cv.parentElement.getBoundingClientRect();
+    this.dpr = window.devicePixelRatio || 1; this.W = r.width; this.H = r.height;
+    this.cv.width = Math.max(1, Math.round(r.width * this.dpr)); this.cv.height = Math.max(1, Math.round(r.height * this.dpr));
+    this.render();
+  },
+  wx(lon, z = this.z) { return (lon + 180) / 360 * 256 * 2 ** z; },
+  wy(lat, z = this.z) { const s = Math.sin(clamp(lat, -85.05, 85.05) * D2R); return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * 256 * 2 ** z; },
+  xl(x, z = this.z) { return x / (256 * 2 ** z) * 360 - 180; },
+  yl(y, z = this.z) { const n = Math.PI - 2 * Math.PI * y / (256 * 2 ** z); return R2D * Math.atan(Math.sinh(n)); },
+  toScr(lat, lon) { return [this.wx(lon) - this.wx(this.lon) + this.W / 2, this.wy(lat) - this.wy(this.lat) + this.H / 2]; },
+  fromScr(x, y) { return [this.yl(this.wy(this.lat) + y - this.H / 2), this.xl(this.wx(this.lon) + x - this.W / 2)]; },
+  fit(b, pad = 40) {
+    if (!b) return;
+    const rc = this.cv.parentElement.getBoundingClientRect();
+    if (rc.width < 2 * pad + 20 || rc.height < 2 * pad + 20) { requestAnimationFrame(() => this.fit(b, pad)); return; }
+    if (rc.width !== this.W || rc.height !== this.H) this.resize();
+    const dLon = Math.max(1e-5, b[3] - b[1]);
+    let z = Math.log2((this.W - 2 * pad) / (dLon / 360 * 256));
+    const yr = this.wy(b[0], 0) - this.wy(b[2], 0);
+    z = Math.min(z, Math.log2((this.H - 2 * pad) / Math.max(yr, 1e-9)));
+    if (!isFinite(z)) return;
+    this.z = clamp(z, 1, 19.5);
+    this.lat = this.yl((this.wy(b[0]) + this.wy(b[2])) / 2); this.lon = (b[1] + b[3]) / 2;
+    this.render();
+  },
+  zoomAt(dz, x, y) {
+    const [la, lo] = this.fromScr(x, y);
+    this.z = clamp(this.z + dz, 1, 21);
+    const [sx, sy] = this.toScr(la, lo);
+    this.lat = this.yl(this.wy(this.lat) + sy - y); this.lon = this.xl(this.wx(this.lon) + sx - x);
+    this.render();
+  },
+  pan(dx, dy) { this.lat = clamp(this.yl(this.wy(this.lat) - dy), -85, 85); this.lon = this.xl(this.wx(this.lon) - dx); if (this.lon > 180) this.lon -= 360; if (this.lon < -180) this.lon += 360; this.render(); },
+  render() { if (this.queued) return; this.queued = true; requestAnimationFrame(() => { this.queued = false; this.draw(); }); },
+  src() { const b = BASEMAPS[CFG.basemap] || BASEMAPS.none; return CFG.basemap === 'custom' ? { ...b, url: CFG.customUrl } : b; },
+  tile(z, x, y) {
+    const b = this.src(); if (!b.url) return null;
+    const n = 2 ** z; x = ((x % n) + n) % n; if (y < 0 || y >= n) return null;
+    const k = CFG.basemap + '/' + z + '/' + x + '/' + y;
+    let t = this.tiles.get(k);
+    if (!t) {
+      t = { img: new Image(), ok: false, err: false };
+      const url = b.url.replace('{z}', z).replace('{x}', x).replace('{y}', y).replace('{s}', 'abc'[(x + y) % 3]);
+      const useCors = CFG.tileCors;
+      if (useCors) t.img.crossOrigin = 'anonymous';
+      t.img.onload = () => { t.ok = true; this.render(); };
+      t.img.onerror = () => {
+        if (useCors && !t.retried) { t.retried = true; this.tainted = true; t.img = new Image(); t.img.onload = () => { t.ok = true; this.render(); }; t.img.onerror = () => { t.err = true; }; t.img.src = url; }
+        else t.err = true;
+      };
+      t.img.src = url;
+      this.tiles.set(k, t);
+      if (this.tiles.size > 600) { const it = this.tiles.keys(); for (let i = 0; i < 150; i++) this.tiles.delete(it.next().value); }
+    }
+    return t;
+  },
+  draw() {
+    const g = this.ctx, d = this.dpr;
+    g.setTransform(d, 0, 0, d, 0, 0);
+    g.fillStyle = '#0b0d0e'; g.fillRect(0, 0, this.W, this.H);
+    const b = this.src();
+    const zt = clamp(Math.round(this.z), 0, b.max), sc = 2 ** (this.z - zt), ts = 256 * sc;
+    const cx = this.wx(this.lon, zt) - this.W / 2 / sc, cy = this.wy(this.lat, zt) - this.H / 2 / sc;
+    const x0 = Math.floor(cx / 256), y0 = Math.floor(cy / 256), x1 = Math.floor((cx + this.W / sc) / 256), y1 = Math.floor((cy + this.H / sc) / 256);
+    if (b.url) {
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+        const sx = (x * 256 - cx) * sc, sy = (y * 256 - cy) * sc;
+        const t = this.tile(zt, x, y);
+        if (t && t.ok) { g.drawImage(t.img, sx, sy, ts + 0.5, ts + 0.5); continue; }
+        for (let k = 1; k <= 5 && zt - k >= 0; k++) { // parent fallback
+          const n = 2 ** zt, px = Math.floor((((x % n) + n) % n) / 2 ** k), py = Math.floor(y / 2 ** k);
+          const pk = CFG.basemap + '/' + (zt - k) + '/' + px + '/' + py, pt = this.tiles.get(pk);
+          if (pt && pt.ok) { const f = 256 / 2 ** k, ox = ((((x % n) + n) % n) % 2 ** k) * f, oy = (y % 2 ** k) * f; g.drawImage(pt.img, ox, oy, f, f, sx, sy, ts + 0.5, ts + 0.5); break; }
+        }
+      }
+    } else { // graticule
+      g.strokeStyle = '#1d2226'; g.lineWidth = 1;
+      const step = [10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001][clamp(Math.floor(this.z / 1.6), 0, 12)];
+      const [la0, lo0] = this.fromScr(0, this.H), [la1, lo1] = this.fromScr(this.W, 0);
+      g.beginPath();
+      for (let lo = Math.ceil(lo0 / step) * step; lo <= lo1; lo += step) { const [x] = this.toScr(0, lo); g.moveTo(x, 0); g.lineTo(x, this.H); }
+      for (let la = Math.ceil(la0 / step) * step; la <= la1; la += step) { const [, y] = this.toScr(la, 0); g.moveTo(0, y); g.lineTo(this.W, y); }
+      g.stroke();
+    }
+    if (this.overlay) { g.save(); try { this.overlay(g); } catch (e) { console.error(e); } g.restore(); }
+    this.scaleBar(g);
+    $('#mapAttr').textContent = b.attr + (CFG.demMode === 'terrarium' ? ' · DEM: Terrarium (AWS)' : CFG.demMode === 'asc' && DEM.asc ? ' · DEM: ASCII grid' : '');
+  },
+  scaleBar(g) {
+    const mpp = 156543.03392 * Math.cos(this.lat * D2R) / 2 ** this.z;
+    let m = mpp * 120; const p = 10 ** Math.floor(Math.log10(m)); m = [1, 2, 5].map(k => k * p).filter(v => v <= m).pop() || p;
+    const w = m / mpp, x = this.W - w - 14, y = this.H - 26;
+    g.strokeStyle = '#cdd3d9'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(x, y - 4); g.lineTo(x, y); g.lineTo(x + w, y); g.lineTo(x + w, y - 4); g.stroke();
+    g.fillStyle = '#cdd3d9'; g.font = '11px ' + getComputedStyle(document.body).fontFamily; g.textAlign = 'center';
+    g.fillText(m >= 1000 ? m / 1000 + ' km' : m + ' m', x + w / 2, y - 6); g.textAlign = 'left';
+  },
+};
+
+/* =====================================================================
+   APPLICATION STATE & LOADING
+   ===================================================================== */
+const S = {
+  name: '', size: 0, kind: null, u8: null, ts: null, mp4: null, video: null, frames: [], fps: 0, minPts: 0,
+  klv: [], track: null, dur: 0, playable: false, vidUrl: null, sidecar: null, warnings: [],
+  inT: null, outT: null, aoi: [], aoiDone: false, drawing: false, results: [], selRes: -1,
+  hist: [], trackPts: [], fcPts: [], series: [], bbox: null, cur: null, pick: null, sec: null,
+  pktIdx: -1, metaFollow: true, chartKey: 'niirs', ortho: false, follow: false, showHist: true,
+};
+const vid = $('#vid');
+const status = (m, cls) => { const e = $('#status'); e.textContent = m; e.className = cls || ''; };
+const warn = m => { S.warnings.push(m); console.warn(m); };
+
+function resetState() {
+  if (S.vidUrl) URL.revokeObjectURL(S.vidUrl);
+  vid.removeAttribute('src'); vid.load();
+  Object.assign(S, { name: '', size: 0, kind: null, u8: null, ts: null, mp4: null, video: null, frames: [], fps: 0, minPts: 0, klv: [], track: null, dur: 0, playable: false, vidUrl: null, warnings: [], inT: null, outT: null, results: [], selRes: -1, hist: [], trackPts: [], fcPts: [], series: [], bbox: null, cur: null, pick: null, sec: null, pktIdx: -1 });
+  P.vt = 0; P.playing = false;
+}
+
+async function openFiles(files) {
+  const list = [...files];
+  const isVid = f => /\.(ts|m2ts|mts|mpg|mpeg|trp|tsv|mp4|m4v|mov|3gp)$/i.test(f.name);
+  const vids = list.filter(isVid), others = list.filter(f => !isVid(f));
+  // order: DEM first, then video, then sidecars
+  for (const f of others.filter(f => /\.asc$/i.test(f.name))) await loadASC(f);
+  if (vids.length) await loadVideoFile(vids[0]);
+  for (const f of others.filter(f => !/\.asc$/i.test(f.name))) await loadSidecar(f);
+  if (!vids.length && !others.length) status('Unsupported file');
+}
+
+async function loadVideoFile(file) {
+  resetState();
+  S.name = file.name; S.size = file.size;
+  $('#fileName').textContent = file.name; $('#drop').style.display = 'none';
+  status('Reading ' + (file.size / 1048576).toFixed(1) + ' MB…');
+  const t0 = performance.now();
+  try {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    S.u8 = buf;
+    const isMP4 = buf.length > 12 && /^(ftyp|moov|free|mdat|wide|skip)$/.test(String.fromCharCode(buf[4], buf[5], buf[6], buf[7]));
+    if (isMP4) await loadMP4(buf, file); else await loadTS(buf);
+  } catch (e) {
+    console.error(e); status('Error: ' + e.message, 'badc'); warn(e.message);
+  }
+  if (!S.klv.length && S.sidecar) { S.klv = S.sidecar; warn('Using previously loaded sidecar metadata'); }
+  finishLoad();
+  status('Loaded in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s · ' + S.klv.length + ' KLV packets');
+}
+
+async function loadTS(buf) {
+  S.kind = 'ts';
+  const ts = await demuxTS(buf, f => status('Demuxing… ' + Math.round(f * 100) + '%'));
+  S.ts = ts;
+  if (ts.resyncs) warn(ts.resyncs + ' sync losses during demux');
+  const vs = [...ts.streams.values()].find(s => s.kind === 'video');
+  if (vs) {
+    const v = buildVideoFromTS(vs, ts.pesList.get(vs.pid) || []);
+    S.video = v;
+    if (v.samples.length) {
+      S.minPts = Math.min(...v.samples.map(s => s.pts));
+      S.frames = v.samples.map(s => (s.pts - S.minPts) / 90000).sort((a, b) => a - b);
+    }
+    if (v.playable) {
+      status('Remuxing H.264 for playback…');
+      await new Promise(r => setTimeout(r));
+      const blob = writeMP4({ timescale: 90000, entry: avc1Entry(v.sps, v.pps, v.width, v.height), width: v.width, height: v.height, samples: v.samples }, []);
+      S.vidUrl = URL.createObjectURL(blob);
+      S.playable = true;
+    } else warn('Video codec ' + v.codec + ' cannot be remuxed for browser playback — metadata-only mode');
+  } else warn('No video stream found');
+  // KLV
+  const klvStreams = [...ts.streams.values()].filter(s => s.kind === 'klv' || s.kind === 'private');
+  const recs = [];
+  for (const ks of klvStreams) {
+    let rest = null, found = 0;
+    for (const p of ts.pesList.get(ks.pid) || []) {
+      const data = rest ? concatU8([rest, p.data]) : p.data;
+      const r = scanKLV(data); rest = r.rest;
+      for (const k of r.packets) { recs.push(makeRec(k.raw, p.pts, p.off, ks.pid)); found++; }
+    }
+    if (found && ks.kind === 'private') { ks.kind = 'klv'; ks.codec += ' (UAS LS found)'; }
+  }
+  assignTimes(recs, 90000, S.minPts);
+  S.klv = recs.sort((a, b) => a.t - b.t);
+}
+
+async function loadMP4(buf, file) {
+  S.kind = 'mp4';
+  const m = parseMP4(buf); S.mp4 = m;
+  const vt = m.tracks.find(t => t.handler === 'vide');
+  if (vt) {
+    const ts = vt.timescale;
+    S.video = { codec: vt.entryType, timescale: ts, samples: vt.samples, width: vt.width, height: vt.height, entry: vt.entry, playable: true, track: vt };
+    const base = vt.mediaStart;
+    S.minPts = base;
+    S.frames = vt.samples.map(s => (s.pts - base) / ts + vt.emptyStart).sort((a, b) => a - b);
+  } else warn('No video track');
+  const recs = [];
+  for (const t of m.tracks.filter(t => t !== vt)) {
+    for (const s of t.samples) {
+      const r = scanKLV(buf.subarray(s.off, s.off + s.size));
+      for (const k of r.packets) { const rec = makeRec(k.raw, null, s.off, 'trak ' + t.id); rec.t = (s.pts - t.mediaStart) / t.timescale + t.emptyStart; recs.push(rec); }
+    }
+    if (recs.length) S.klvTrack = t;
+  }
+  recs.forEach(r => r.t += CFG.klvOffset);
+  S.klv = recs.sort((a, b) => a.t - b.t);
+  S.vidUrl = URL.createObjectURL(file); S.playable = true;
+  if (!S.klv.length) warn('No KLV metadata track in MP4 — load a sidecar (.klv / .csv / .json) to georeference');
+}
+
+function makeRec(raw, pts, off, src) {
+  const d = decodeUAS(raw);
+  return { raw, pts, off, src, f: d.f, items: d.items, csOk: d.csOk, t: 0 };
+}
+/* KLV time: PES PTS when present, else Precision Time Stamp relative to the first stamped packet */
+function assignTimes(recs, scale, basePts) {
+  const withPts = recs.filter(r => r.pts !== null && r.pts !== undefined);
+  const firstTs = recs.find(r => isNum(r.f.ts));
+  let tsAnchor = null;
+  const anchor = withPts.find(r => isNum(r.f.ts));
+  if (anchor) tsAnchor = { ts: anchor.f.ts, t: (anchor.pts - basePts) / scale };
+  for (const r of recs) {
+    if (r.pts !== null && r.pts !== undefined) r.t = (r.pts - basePts) / scale;
+    else if (isNum(r.f.ts) && tsAnchor) r.t = tsAnchor.t + (r.f.ts - tsAnchor.ts) / 1e6;
+    else if (isNum(r.f.ts) && firstTs) r.t = (r.f.ts - firstTs.f.ts) / 1e6;
+    r.t += CFG.klvOffset;
+  }
+  if (!withPts.length && recs.length) warn('KLV has no PES timestamps — timed from Precision Time Stamp (tag 2)');
+}
+
+function finishLoad() {
+  const v = S.video;
+  if (S.frames.length > 1) {
+    const d = []; for (let i = 1; i < Math.min(S.frames.length, 600); i++) d.push(S.frames[i] - S.frames[i - 1]);
+    const md = median(d.filter(x => x > 0)); S.fps = md ? 1 / md : 0;
+  }
+  const vDur = S.frames.length ? S.frames[S.frames.length - 1] + (S.fps ? 1 / S.fps : 0) : 0;
+  const kDur = S.klv.length ? S.klv[S.klv.length - 1].t : 0;
+  S.dur = Math.max(vDur, kDur, 0.001);
+  if (v && v.width) { CFG.imgW = v.width; CFG.imgH = v.height; document.documentElement.style.setProperty('--vidAR', v.width + '/' + v.height); }
+  // security marking
+  const sr = S.klv.find(r => r.f.security);
+  S.sec = sr ? sr.f.security : null;
+  const bar = $('#secbar');
+  if (S.sec && S.sec.classification) {
+    const c = S.sec.classification, col = { 'UNCLASSIFIED': '#2d6a2d', 'RESTRICTED': '#1f4f8f', 'CONFIDENTIAL': '#1f3f9f', 'SECRET': '#a3202c', 'TOP SECRET': '#c76a00' }[c] || '#555';
+    bar.style.background = col;
+    bar.textContent = 'METADATA SECURITY LS: ' + [c, S.sec['Classifying Country'], S.sec['SCI/SHI'], S.sec['Caveats'], S.sec['Releasing Instructions']].filter(Boolean).join(' // ');
+    bar.classList.add('show');
+  } else bar.classList.remove('show');
+  // video
+  if (S.playable && S.vidUrl) { vid.src = S.vidUrl; $('#vidMsg').textContent = ''; }
+  else $('#vidMsg').textContent = S.video ? 'Video codec ' + S.video.codec + ' not playable in browser — metadata timeline active' : (S.klv.length ? 'Metadata only — timeline driven by KLV' : 'No video');
+  rebuildTrack();
+  DEM.reset(); preloadDEM();
+  if (S.bbox) MapV.fit(S.bbox);
+  buildFilePane(); buildMetaPane(); buildSearchPane(); buildExportPane();
+  seek(S.frames.length ? S.frames[0] : 0);
+  dirty();
+}
+
+function rebuildTrack() {
+  S.track = S.klv.length ? new Track(S.klv) : null;
+  computeDerived();
+}
+function computeDerived() {
+  S.trackPts = []; S.fcPts = []; S.hist = []; S.series = [];
+  const T = S.track; if (!T) { S.bbox = null; return; }
+  let b = [90, 180, -90, -180];
+  const ext = (la, lo) => { if (!isNum(la) || !isNum(lo)) return; b[0] = Math.min(b[0], la); b[1] = Math.min(b[1], lo); b[2] = Math.max(b[2], la); b[3] = Math.max(b[3], lo); };
+  for (const r of T.recs) {
+    const g = r.g;
+    if (isNum(g.sensLat) && isNum(g.sensLon)) { S.trackPts.push([g.sensLat, g.sensLon, sensAltMSL(g), r.t]); ext(g.sensLat, g.sensLon); }
+    if (isNum(g.fcLat) && isNum(g.fcLon)) { S.fcPts.push([g.fcLat, g.fcLon, g.fcElev, r.t]); ext(g.fcLat, g.fcLon); }
+    if (g.corners) g.corners.forEach(c => ext(c[0], c[1]));
+  }
+  S.bbox = b[0] <= b[2] ? b : null;
+  // footprint history & time series
+  const t0 = Math.max(0, T.t0), t1 = Math.min(S.dur, T.t1);
+  const step = Math.max(CFG.histStep, (t1 - t0) / 1500);
+  for (let t = t0; t <= t1 + 1e-6; t += step) {
+    const st = T.at(t); const fp = footprint(st, 1);
+    if (fp) { S.hist.push({ t, pts: fp.pts }); fp.pts.forEach(p => !p.horizon && ext(p.lat, p.lon)); }
+  }
+  const sstep = Math.max(0.2, (t1 - t0) / 2000);
+  for (let t = t0; t <= t1 + 1e-6; t += sstep) S.series.push(seriesPoint(T.at(t), t));
+  S.bbox = b[0] <= b[2] ? b : null;
+  S.cur = null;
+}
+function seriesPoint(st, t) {
+  const o = { t, alt: sensAltMSL(st), hfov: st.hfov, slant: st.slant };
+  const P = makeProjector(st);
+  let c = null;
+  if (P) c = P.toGround(0, 0);
+  else if (isNum(st.fcLat)) c = { lat: st.fcLat, lon: st.fcLon, h: refElev(st) };
+  if (c && !c.horizon) { const g = viewGeom(st, c.lat, c.lon, c.h); if (g) { o.niirs = g.niirs; o.gsd = g.gsd; o.graz = g.graz; o.slantC = g.slant; o.look = g.lookFrom; } }
+  return o;
+}
+function preloadDEM() {
+  if (CFG.demMode !== 'terrarium' || !S.bbox) return;
+  const pad = 0.02, b = S.bbox;
+  const n = DEM.preload([b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad]);
+  if (n < 0) status('DEM area needs ' + (-n) + ' tiles at z' + CFG.demZoom + ' — lower DEM zoom in Settings; tiles load on demand instead');
+}
+let demTimer = null;
+DEM.onUpdate = () => { clearTimeout(demTimer); demTimer = setTimeout(() => { computeDerived(); S.orthoCache = null; dirty(); updateDemStatus(); }, 250); };
+
+/* =====================================================================
+   PLAYER / CLOCK
+   ===================================================================== */
+const P = {
+  playing: false, vt: 0, last: 0,
+  time() { return S.playable && vid.readyState >= 1 ? vid.currentTime : this.vt; },
+  play() {
+    if (S.outT !== null && $('#cLoop').checked && this.time() >= S.outT - 1e-3) seek(S.inT ?? 0);
+    this.playing = true;
+    if (S.playable) vid.play().catch(e => status('Play: ' + e.message));
+    this.last = performance.now(); $('#bPlay').textContent = '❚❚';
+  },
+  pause() { this.playing = false; if (S.playable) vid.pause(); $('#bPlay').textContent = '▶'; },
+  toggle() { this.playing ? this.pause() : this.play(); },
+};
+function seek(t) {
+  t = clamp(t, 0, S.dur);
+  if (S.playable && vid.readyState >= 1) vid.currentTime = t; else P.vt = t;
+  P.vt = t; dirty();
+}
+function frameIndex(t) { return S.frames.length ? Math.max(0, bsearchLE(S.frames, t + 1e-4, x => x)) : -1; }
+function stepFrame(n) {
+  P.pause();
+  if (!S.frames.length) { seek(P.time() + n * 0.1); return; }
+  const i = clamp(frameIndex(P.time()) + n, 0, S.frames.length - 1);
+  seek(S.frames[i] + 1e-3);
+}
+let _dirty = true, _lastT = -1, _lastMeta = 0;
+const dirty = () => { _dirty = true; };
+function loop(now) {
+  if (P.playing && !S.playable) {
+    P.vt += (now - P.last) / 1000 * parseFloat($('#rate').value); P.last = now;
+    if (P.vt >= S.dur) { P.vt = S.dur; P.pause(); }
+  }
+  P.last = now;
+  let t = P.time();
+  if (P.playing && S.outT !== null && $('#cLoop').checked && t >= S.outT) { seek(S.inT ?? 0); t = P.time(); }
+  if (t !== _lastT || _dirty) {
+    _lastT = t; _dirty = false;
+    updateCurrent(t);
+    updateHud(t); drawVidOverlay(); drawTimeline(); MapV.render();
+    if (now - _lastMeta > 120) { _lastMeta = now; updateMetaPane(t); }
+  }
+  requestAnimationFrame(loop);
+}
+vid.addEventListener('ended', () => P.pause());
+vid.addEventListener('loadedmetadata', () => { if (S.video && !S.video.width) { CFG.imgW = vid.videoWidth; CFG.imgH = vid.videoHeight; } dirty(); });
+vid.addEventListener('seeked', dirty);
+vid.addEventListener('error', () => {
+  const m = vid.error && vid.error.message || 'unknown';
+  const sandboxed = /URL safety|not allowed|SecurityError/i.test(m) || (window.self !== window.top);
+  warn('Browser could not decode the video (' + m + ')' + (sandboxed ? ' — this page is running inside a sandboxed preview, which blocks local (blob:) video. Save the HTML file and open it directly in Chrome or Edge.' : ''));
+  $('#vidMsg').textContent = sandboxed ? 'Video blocked by the embedded preview. Open misb_viewer.html directly in Chrome/Edge (double-click the saved file). Metadata, map and exports still work here.' : 'Video decode failed — metadata timeline active';
+  S.playable = false; buildFilePane(); buildExportPane();
+});
+
+function updateCurrent(t) {
+  if (!S.track) { S.cur = null; return; }
+  if (S.cur && S.cur.t === t) return;
+  const st = S.track.at(t);
+  const fp = footprint(st, 6);
+  const P2 = makeProjector(st);
+  let geo = null, c = fp && fp.center;
+  if (c && !c.horizon) geo = viewGeom(st, c.lat, c.lon, c.h);
+  else if (isNum(st.fcLat)) { c = { lat: st.fcLat, lon: st.fcLon, h: refElev(st) }; geo = viewGeom(st, c.lat, c.lon, c.h); }
+  let aoiInfo = null;
+  if (S.aoi.length && S.aoiDone && P2) aoiInfo = aoiMetrics(st, P2);
+  S.cur = { t, st, fp, proj: P2, center: c, geo, aoi: aoiInfo };
+}
+
+/* =====================================================================
+   MAP OVERLAY
+   ===================================================================== */
+const COL = { acc: '#f0a030', track: 'rgba(230,236,240,.85)', fc: 'rgba(240,160,48,.55)', hist: 'rgba(205,211,217,.22)', aoi: '#6cc3ff', meta: 'rgba(255,255,255,.75)', hit: 'rgba(108,195,255,.35)' };
+MapV.overlay = g => {
+  const cur = S.cur;
+  if (S.ortho && cur) drawOrtho(g, cur);
+  const poly = (pts, close) => { g.beginPath(); pts.forEach((p, i) => { const [x, y] = MapV.toScr(p[0], p[1]); i ? g.lineTo(x, y) : g.moveTo(x, y); }); if (close) g.closePath(); };
+  if (S.showHist) {
+    g.strokeStyle = COL.hist; g.lineWidth = 1;
+    for (const h of S.hist) { if (h.pts.some(p => p.horizon)) continue; poly(h.pts.map(p => [p.lat, p.lon]), true); g.stroke(); }
+  }
+  if (S.results.length) {
+    g.strokeStyle = COL.hit; g.lineWidth = 1;
+    for (const [ri, r] of S.results.entries()) for (const h of S.hist) if (h.t >= r.t0 && h.t <= r.t1) { if (h.pts.some(p => p.horizon)) continue; g.strokeStyle = ri === S.selRes ? 'rgba(108,195,255,.8)' : COL.hit; poly(h.pts.map(p => [p.lat, p.lon]), true); g.stroke(); }
+  }
+  if (S.fcPts.length > 1) { g.strokeStyle = COL.fc; g.lineWidth = 1; g.setLineDash([2, 3]); poly(S.fcPts); g.stroke(); g.setLineDash([]); }
+  if (S.trackPts.length > 1) {
+    g.strokeStyle = COL.track; g.lineWidth = 1.6; poly(S.trackPts); g.stroke();
+    if (S.inT !== null || S.outT !== null) {
+      const a = S.inT ?? 0, b = S.outT ?? S.dur;
+      g.strokeStyle = COL.acc; g.lineWidth = 3; poly(S.trackPts.filter(p => p[3] >= a && p[3] <= b)); g.stroke();
+    }
+  }
+  if (S.aoi.length) {
+    g.strokeStyle = COL.aoi; g.fillStyle = 'rgba(108,195,255,.12)'; g.lineWidth = 2;
+    poly(S.aoi, S.aoiDone); if (S.aoiDone && S.aoi.length > 2) g.fill(); g.stroke();
+    for (const p of S.aoi) { const [x, y] = MapV.toScr(p[0], p[1]); g.fillStyle = COL.aoi; g.fillRect(x - 3, y - 3, 6, 6); }
+  }
+  if (cur && cur.fp) {
+    const pts = cur.fp.pts;
+    g.strokeStyle = COL.acc; g.fillStyle = S.ortho ? 'rgba(0,0,0,0)' : 'rgba(240,160,48,.13)'; g.lineWidth = 2;
+    poly(pts.map(p => [p.lat, p.lon]), true); g.fill(); g.stroke();
+    const [ux, uy] = MapV.toScr(pts[0].lat, pts[0].lon); g.fillStyle = COL.acc; g.beginPath(); g.arc(ux, uy, 3.5, 0, 7); g.fill(); // UL marker
+    if (cur.fp.kind === 'pose' && cur.st.corners && $('#cMetaCorners') && $('#cMetaCorners').checked) {
+      g.strokeStyle = COL.meta; g.lineWidth = 1; g.setLineDash([5, 4]); poly(cur.st.corners, true); g.stroke(); g.setLineDash([]);
+    }
+  }
+  if (cur && isNum(cur.st.sensLat)) {
+    const [sx, sy] = MapV.toScr(cur.st.sensLat, cur.st.sensLon);
+    if (cur.center) { const [cx, cy] = MapV.toScr(cur.center.lat, cur.center.lon); g.strokeStyle = 'rgba(240,160,48,.8)'; g.lineWidth = 1; g.beginPath(); g.moveTo(sx, sy); g.lineTo(cx, cy); g.stroke(); g.beginPath(); g.moveTo(cx - 6, cy); g.lineTo(cx + 6, cy); g.moveTo(cx, cy - 6); g.lineTo(cx, cy + 6); g.stroke(); }
+    const hd = (cur.st.platHdg || 0) * D2R;
+    g.save(); g.translate(sx, sy); g.rotate(hd);
+    g.fillStyle = '#fff'; g.strokeStyle = '#000'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, -10); g.lineTo(6, 7); g.lineTo(0, 3); g.lineTo(-6, 7); g.closePath(); g.fill(); g.stroke(); g.restore();
+  }
+  if (S.pick) { const [x, y] = MapV.toScr(S.pick.lat, S.pick.lon); g.strokeStyle = '#fff'; g.lineWidth = 2; g.beginPath(); g.arc(x, y, 6, 0, 7); g.stroke(); g.strokeStyle = COL.acc; g.lineWidth = 1; g.beginPath(); g.arc(x, y, 6, 0, 7); g.stroke(); }
+};
+function updateLegend() {
+  const L = [['Sensor track', COL.track], ['Frame centre track', COL.fc, 'dashed'], ['Current footprint', COL.acc], ['Footprint history', 'rgba(205,211,217,.5)'], ['AOI', COL.aoi]];
+  if (S.results.length) L.push(['Search hits', 'rgba(108,195,255,.7)']);
+  if (S.cur && S.cur.fp && S.cur.fp.kind === 'pose' && S.cur.st.corners) L.push(['Encoder corners (KLV)', COL.meta, 'dashed']);
+  const kind = S.cur && S.cur.fp ? (S.cur.fp.kind === 'pose' ? 'Footprint: sensor model' + (DEM.active() ? ' + DEM ray-cast' : ' + flat ' + (isNum(S.cur.st.fcElev) ? 'FC elev' : CFG.flatElev + ' m')) : 'Footprint: KLV corners') : 'No footprint';
+  $('#legend').innerHTML = L.map(([n, c, d]) => '<div><i style="border-color:' + c + (d ? ';border-top-style:dashed' : '') + '"></i>' + n + '</div>').join('') + '<div class="muted">' + kind + '</div>';
+}
+
+/* pseudo-ortho: drape the current frame on a ray-cast grid */
+const orthoSrc = document.createElement('canvas');
+function drawOrtho(g, cur) {
+  if (!S.playable || vid.readyState < 2 || !cur.proj) return;
+  const [W, H] = imgSize(), N = CFG.orthoGrid, M = Math.max(2, Math.round(N * H / W));
+  if (!S.orthoCache || S.orthoCache.t !== cur.t || S.orthoCache.N !== N) {
+    const nodes = [];
+    for (let j = 0; j <= M; j++) for (let i = 0; i <= N; i++) nodes.push(cur.proj.toGround(-1 + 2 * i / N, -1 + 2 * j / M));
+    const sw = Math.min(960, W), sh = Math.round(sw * H / W);
+    orthoSrc.width = sw; orthoSrc.height = sh;
+    try { orthoSrc.getContext('2d').drawImage(vid, 0, 0, sw, sh); } catch (e) { return; }
+    S.orthoCache = { t: cur.t, N, M, nodes, sw, sh };
+  }
+  const C = S.orthoCache, scr = C.nodes.map(n => n.horizon ? null : MapV.toScr(n.lat, n.lon));
+  g.save(); g.globalAlpha = CFG.orthoAlpha;
+  for (let j = 0; j < C.M; j++) for (let i = 0; i < C.N; i++) {
+    const a = j * (C.N + 1) + i, b = a + 1, c = a + C.N + 1, d = c + 1;
+    if (!scr[a] || !scr[b] || !scr[c] || !scr[d]) continue;
+    const sx = x => x / C.N * C.sw, sy = y => y / C.M * C.sh;
+    const A = [sx(i), sy(j)], B = [sx(i + 1), sy(j)], Cc = [sx(i), sy(j + 1)], D = [sx(i + 1), sy(j + 1)];
+    tri(g, orthoSrc, A, B, D, scr[a], scr[b], scr[d]);
+    tri(g, orthoSrc, A, D, Cc, scr[a], scr[d], scr[c]);
+  }
+  g.restore();
+}
+function tri(g, img, s0, s1, s2, d0, d1, d2) {
+  const A = [[s0[0], s0[1], 1], [s1[0], s1[1], 1], [s2[0], s2[1], 1]];
+  const X = solveLin(A, [d0[0], d1[0], d2[0]]), Y = solveLin(A, [d0[1], d1[1], d2[1]]);
+  if (!X || !Y) return;
+  const cx = (d0[0] + d1[0] + d2[0]) / 3, cy = (d0[1] + d1[1] + d2[1]) / 3;
+  const ex = p => { const dx = p[0] - cx, dy = p[1] - cy, L = Math.hypot(dx, dy) || 1; return [p[0] + dx / L * 0.7, p[1] + dy / L * 0.7]; };
+  const e0 = ex(d0), e1 = ex(d1), e2 = ex(d2);
+  g.save(); g.beginPath(); g.moveTo(e0[0], e0[1]); g.lineTo(e1[0], e1[1]); g.lineTo(e2[0], e2[1]); g.closePath(); g.clip();
+  g.transform(X[0], Y[0], X[1], Y[1], X[2], Y[2]);
+  g.drawImage(img, 0, 0);
+  g.restore();
+}
+
+/* =====================================================================
+   VIDEO OVERLAY (AOI reprojection, pick)
+   ===================================================================== */
+const vo = $('#vidOv'), vg = vo.getContext('2d');
+function drawVidOverlay() {
+  const r = vo.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  if (vo.width !== Math.round(r.width * d)) { vo.width = Math.round(r.width * d); vo.height = Math.round(r.height * d); }
+  vg.setTransform(d, 0, 0, d, 0, 0); vg.clearRect(0, 0, r.width, r.height);
+  const W = r.width, H = r.height, cur = S.cur;
+  vg.strokeStyle = 'rgba(240,160,48,.7)'; vg.lineWidth = 1;
+  vg.beginPath(); vg.moveTo(W / 2 - 12, H / 2); vg.lineTo(W / 2 - 4, H / 2); vg.moveTo(W / 2 + 4, H / 2); vg.lineTo(W / 2 + 12, H / 2); vg.moveTo(W / 2, H / 2 - 12); vg.lineTo(W / 2, H / 2 - 4); vg.moveTo(W / 2, H / 2 + 4); vg.lineTo(W / 2, H / 2 + 12); vg.stroke();
+  if (!cur || !cur.proj) return;
+  const toPx = uv => [(uv[0] + 1) / 2 * W, (uv[1] + 1) / 2 * H];
+  if (S.aoi.length && S.aoiDone) {
+    const pts = S.aoi.map(p => cur.proj.toImage(p[0], p[1], groundElev(p[0], p[1], cur.st)));
+    if (pts.every(Boolean)) {
+      vg.strokeStyle = COL.aoi; vg.lineWidth = 2; vg.beginPath();
+      pts.forEach((p, i) => { const [x, y] = toPx(p); i ? vg.lineTo(x, y) : vg.moveTo(x, y); });
+      if (pts.length > 2) vg.closePath(); vg.stroke();
+      if (pts.length === 1) { const [x, y] = toPx(pts[0]); vg.beginPath(); vg.arc(x, y, 8, 0, 7); vg.stroke(); }
+    }
+  }
+  if (S.pick && S.pick.t !== undefined) {
+    const uv = cur.proj.toImage(S.pick.lat, S.pick.lon, S.pick.h);
+    if (uv) { const [x, y] = toPx(uv); vg.strokeStyle = '#fff'; vg.lineWidth = 1.5; vg.beginPath(); vg.arc(x, y, 6, 0, 7); vg.stroke(); }
+  }
+  vg.fillStyle = 'rgba(0,0,0,.55)'; vg.fillRect(0, H - 18, W, 18);
+  vg.fillStyle = '#cdd3d9'; vg.font = '11px ' + getComputedStyle(document.body).fontFamily;
+  const g = cur.geo;
+  vg.fillText([fmtUTC(cur.st.ts), g && isNum(g.niirs) ? 'NIIRS≈' + g.niirs.toFixed(1) : '', g && isNum(g.gsd) ? 'GSD ' + g.gsd.toFixed(2) + ' m' : '', cur.aoi ? 'AOI ' + Math.round(cur.aoi.cov * 100) + '% in frame' : ''].filter(Boolean).join('   '), 6, H - 5);
+}
+vo.addEventListener('click', e => {
+  const cur = S.cur; if (!cur || !cur.proj) return;
+  const r = vo.getBoundingClientRect(), u = (e.clientX - r.left) / r.width * 2 - 1, v = (e.clientY - r.top) / r.height * 2 - 1;
+  const g = cur.proj.toGround(u, v);
+  if (g.horizon) { status('Pick: ray does not intersect ground within ' + CFG.maxRange / 1000 + ' km'); return; }
+  S.pick = { ...g, t: cur.t, u, v };
+  status('Pick ' + g.lat.toFixed(6) + ', ' + g.lon.toFixed(6) + ', ' + fx(g.h, 0) + ' m');
+  dirty();
+});
+
+/* =====================================================================
+   HUD
+   ===================================================================== */
+function updateHud(t) {
+  $('#tc').textContent = fmtT(t);
+  const fi = frameIndex(t);
+  $('#fr').textContent = S.frames.length ? 'frame ' + (fi + 1) + ' / ' + S.frames.length + (S.fps ? ' · ' + S.fps.toFixed(2) + ' fps' : '') : 'no frames';
+  $('#clipTxt').textContent = (S.inT !== null || S.outT !== null) ? 'clip ' + fmtT(S.inT ?? 0) + ' → ' + fmtT(S.outT ?? S.dur) : '';
+  const c = S.cur, st = c && c.st, g = c && c.geo;
+  const rows = st ? [
+    ['UTC', fmtUTC(st.ts)], ['Platform', (st.platform || '–') + (st.sensor ? ' / ' + st.sensor : '')],
+    ['Sensor', fdeg(st.sensLat, 5) + ', ' + fdeg(st.sensLon, 5)], ['Alt MSL', fx(sensAltMSL(st), 0) + ' m'],
+    ['Hdg/P/R', fx(st.platHdg, 1) + ' / ' + fx(st.platPitch, 1) + ' / ' + fx(st.platRoll, 1)], ['Az/El', fx(st.relAz, 1) + ' / ' + fx(st.relEl, 1)],
+    ['HFOV', fx(st.hfov, 2) + '°'], ['Slant', fx(g ? g.slant : st.slant, 0) + ' m'],
+    ['Centre', c.center ? fdeg(c.center.lat, 5) + ', ' + fdeg(c.center.lon, 5) : '–'], ['Ground h', c.center ? fx(c.center.h, 0) + ' m' : '–'],
+    ['Grazing', g ? fx(g.graz, 1) + '°' : '–'], ['Look from', g ? fx(g.lookFrom, 0) + '°T' : '–'],
+    ['GSD', g && isNum(g.gsd) ? g.gsd.toFixed(2) + ' m' : '–'], ['NIIRS≈', g && isNum(g.niirs) ? g.niirs.toFixed(1) : '–'],
+    ['AOI', c.aoi ? Math.round(c.aoi.cov * 100) + '% · NIIRS ' + fx(c.aoi.niirs, 1) : '–'], ['Pick', S.pick ? S.pick.lat.toFixed(5) + ', ' + S.pick.lon.toFixed(5) + ' · ' + fx(S.pick.h, 0) + ' m' : 'click video'],
+  ] : [['Metadata', 'none at this time']];
+  $('#hud').innerHTML = rows.map(([k, v]) => '<span>' + k + '</span><span>' + esc(v) + '</span>').join('');
+  updateLegend();
+}
+
+/* =====================================================================
+   TIMELINE
+   ===================================================================== */
+const tl = $('#tl'), tg = tl.getContext('2d');
+const CHARTS = { niirs: ['NIIRS (est.)', 'niirs'], gsd: ['GSD m', 'gsd'], graz: ['Grazing °', 'graz'], slant: ['Slant range m', 'slantC'], alt: ['Altitude MSL m', 'alt'], hfov: ['HFOV °', 'hfov'], look: ['Look-from °T', 'look'] };
+function tlX(t) { return 8 + (tl.clientWidth - 16) * (t / (S.dur || 1)); }
+function tlT(x) { return clamp((x - 8) / (tl.clientWidth - 16) * (S.dur || 1), 0, S.dur); }
+function drawTimeline() {
+  const d = window.devicePixelRatio || 1, W = tl.clientWidth, H = tl.clientHeight;
+  if (tl.width !== Math.round(W * d)) { tl.width = Math.round(W * d); tl.height = Math.round(H * d); }
+  tg.setTransform(d, 0, 0, d, 0, 0); tg.clearRect(0, 0, W, H);
+  tg.font = '10px ' + getComputedStyle(document.body).fontFamily;
+  if (!S.dur) return;
+  // clip shading
+  if (S.inT !== null || S.outT !== null) { const a = tlX(S.inT ?? 0), b = tlX(S.outT ?? S.dur); tg.fillStyle = 'rgba(240,160,48,.10)'; tg.fillRect(a, 0, b - a, H); tg.fillStyle = COL.acc; tg.fillRect(a - 1, 0, 2, H); tg.fillRect(b - 1, 0, 2, H); }
+  // lane 1: keyframes + KLV ticks
+  tg.fillStyle = '#56606a'; tg.fillText('KLV', 10, 10);
+  tg.fillStyle = 'rgba(205,211,217,.35)';
+  const step = Math.max(1, Math.floor(S.klv.length / W));
+  for (let i = 0; i < S.klv.length; i += step) { const r = S.klv[i]; tg.fillStyle = r.csOk === false ? '#e06c5c' : 'rgba(205,211,217,.35)'; tg.fillRect(tlX(r.t), 3, 1, 8); }
+  if (S.video) { tg.fillStyle = 'rgba(240,160,48,.7)'; for (const s of S.video.samples) if (s.key) tg.fillRect(tlX((S.kind === 'ts' ? (s.pts - S.minPts) / 90000 : (s.pts - S.minPts) / S.video.timescale)), 12, 1, 4); }
+  // lane 2: search hits
+  for (const [i, r] of S.results.entries()) { tg.fillStyle = i === S.selRes ? '#6cc3ff' : 'rgba(108,195,255,.55)'; tg.fillRect(tlX(r.t0), 19, Math.max(2, tlX(r.t1) - tlX(r.t0)), 7); }
+  // lane 3: chart
+  const [lbl, key] = CHARTS[S.chartKey] || CHARTS.niirs;
+  const vals = S.series.map(p => p[key]).filter(isNum);
+  const y0 = 30, y1 = H - 16;
+  tg.strokeStyle = '#2c3238'; tg.beginPath(); tg.moveTo(8, y1 + 0.5); tg.lineTo(W - 8, y1 + 0.5); tg.stroke();
+  if (vals.length) {
+    let lo = Math.min(...vals), hi = Math.max(...vals); if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
+    tg.strokeStyle = 'rgba(205,211,217,.75)'; tg.lineWidth = 1; tg.beginPath(); let pen = false;
+    for (const p of S.series) { const v = p[key]; if (!isNum(v)) { pen = false; continue; } const x = tlX(p.t), y = y1 - (v - lo) / (hi - lo) * (y1 - y0); pen ? tg.lineTo(x, y) : tg.moveTo(x, y); pen = true; }
+    tg.stroke();
+    tg.fillStyle = '#7f8a94'; tg.fillText(lbl + '  ' + fx(hi, 1), 10, y0 + 8); tg.fillText(fx(lo, 1), 10, y1 - 2);
+  } else { tg.fillStyle = '#56606a'; tg.fillText(lbl + ': no data', 10, y0 + 10); }
+  // ruler
+  tg.fillStyle = '#7f8a94';
+  const tick = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600].find(s => (W - 16) / (S.dur / s) > 70) || 3600;
+  for (let s = 0; s <= S.dur; s += tick) { const x = tlX(s); tg.fillRect(x, H - 14, 1, 4); tg.fillText(fmtT(s).replace(/\.\d+$/, ''), x + 2, H - 3); }
+  // playhead
+  const x = tlX(P.time()); tg.fillStyle = COL.acc; tg.fillRect(x - 1, 0, 2, H);
+  if (tl._hover !== undefined) { tg.fillStyle = 'rgba(255,255,255,.4)'; tg.fillRect(tl._hover, 0, 1, H); tg.fillStyle = '#cdd3d9'; tg.fillText(fmtT(tlT(tl._hover)), Math.min(tl._hover + 4, W - 70), 28); }
+}
+(() => {
+  let drag = null;
+  tl.addEventListener('pointerdown', e => {
+    const x = e.offsetX;
+    if (S.inT !== null && Math.abs(x - tlX(S.inT)) < 5) drag = 'in';
+    else if (S.outT !== null && Math.abs(x - tlX(S.outT)) < 5) drag = 'out';
+    else { drag = 'seek'; P.pause(); seek(tlT(x)); }
+    tl.setPointerCapture(e.pointerId);
+  });
+  tl.addEventListener('pointermove', e => {
+    tl._hover = e.offsetX; dirty();
+    if (!drag) return;
+    const t = tlT(e.offsetX);
+    if (drag === 'seek') seek(t);
+    else if (drag === 'in') S.inT = Math.min(t, S.outT ?? S.dur);
+    else S.outT = Math.max(t, S.inT ?? 0);
+    if (drag !== 'seek') buildExportPane();
+  });
+  tl.addEventListener('pointerup', () => { drag = null; });
+  tl.addEventListener('pointerleave', () => { tl._hover = undefined; dirty(); });
+})();
+
+/* =====================================================================
+   FILE PANE
+   ===================================================================== */
+function buildFilePane() {
+  const p = $('#pFile'); p.innerHTML = '';
+  if (!S.name && !S.klv.length) { p.innerHTML = '<p class="muted">Open or drop a file to begin.</p>'; return; }
+  const v = S.video, ok = S.klv.filter(r => r.csOk === true).length, bad = S.klv.filter(r => r.csOk === false).length;
+  const vers = [...new Set(S.klv.map(r => r.f.version).filter(isNum))];
+  const span = S.klv.length ? S.klv[S.klv.length - 1].t - S.klv[0].t : 0;
+  const tagsSeen = new Set(); S.klv.forEach(r => r.items.forEach(i => tagsSeen.add(i.tag)));
+  const kv = rows => h('table', null, rows.map(([k, val]) => h('tr', null, h('td', { class: 'k' }, k), h('td', null, val))));
+  p.append(h('h3', null, 'Source'), kv([
+    ['File', S.name || '–'], ['Size', S.size ? (S.size / 1048576).toFixed(2) + ' MB' : '–'],
+    ['Container', S.kind === 'ts' ? 'MPEG-2 TS (' + S.ts.det.ps + '-byte packets, ' + S.ts.pktCount.toLocaleString() + ' pkts)' : S.kind === 'mp4' ? 'ISO BMFF (MP4/MOV)' : 'sidecar only'],
+    ['Duration', fmtT(S.dur)],
+  ]));
+  if (S.kind === 'ts') {
+    p.append(h('h3', null, 'Elementary streams'), h('table', null,
+      h('tr', null, h('th', null, 'PID'), h('th', null, 'type'), h('th', null, 'codec / content')),
+      [...S.ts.streams.values()].map(s => h('tr', null, h('td', null, '0x' + s.pid.toString(16).padStart(4, '0')), h('td', null, s.kind), h('td', null, s.codec + (s.reg ? ' [' + s.reg + ']' : ''))))));
+  }
+  if (S.kind === 'mp4' && S.mp4) {
+    p.append(h('h3', null, 'Tracks'), h('table', null, h('tr', null, h('th', null, 'id'), h('th', null, 'handler'), h('th', null, 'entry'), h('th', null, 'samples')),
+      S.mp4.tracks.map(t => h('tr', null, h('td', null, t.id), h('td', null, t.handler), h('td', null, t.entryType), h('td', null, t.samples.length)))));
+  }
+  if (v) p.append(h('h3', null, 'Video'), kv([
+    ['Codec', v.codec + (v.profile ? ' (profile ' + v.profile + ', level ' + (v.level / 10) + ')' : '')], ['Size', (v.width || '?') + ' × ' + (v.height || '?')],
+    ['Frames', S.frames.length + ' @ ' + fx(S.fps, 3) + ' fps'], ['Key frames', v.samples.filter(s => s.key).length],
+    ['Playback', S.playable ? (S.kind === 'ts' ? 'remuxed in-browser to MP4' : 'native') : h('span', { class: 'badc' }, 'not playable')],
+  ]));
+  p.append(h('h3', null, 'KLV metadata'), kv([
+    ['Packets', S.klv.length + (span > 0 ? ' · ' + (S.klv.length / span).toFixed(1) + ' Hz' : '')],
+    ['Span', S.klv.length ? fmtT(S.klv[0].t) + ' → ' + fmtT(S.klv[S.klv.length - 1].t) : '–'],
+    ['UTC', S.klv.length ? fmtUTC(S.klv[0].f.ts) : '–'],
+    ['ST 0601 version', vers.length ? vers.join(', ') : '–'],
+    ['Checksums', h('span', null, h('span', { class: 'okc' }, ok + ' pass'), ' · ', h('span', { class: bad ? 'badc' : 'muted' }, bad + ' fail'), ' · ' + (S.klv.length - ok - bad) + ' absent')],
+    ['Distinct tags', tagsSeen.size],
+    ['Pose for terrain model', S.track && S.track.recs.some(r => hasPose(r.g)) ? h('span', { class: 'okc' }, 'yes') : h('span', { class: 'badc' }, 'no (using KLV corners if present)')],
+    ['Security', S.sec ? Object.entries(S.sec).map(([k, x]) => k + ': ' + x).join(' · ') : '–'],
+  ]));
+  if (S.warnings.length) p.append(h('h3', null, 'Notes'), h('div', null, S.warnings.map(w => h('div', { class: 'note' }, '• ' + w))));
+  p.append(h('h3', null, 'Add data'), h('div', { class: 'btns' },
+    h('button', { onclick: () => pickFile('.klv,.bin,.csv,.json', f => loadSidecar(f)) }, 'Sidecar metadata…'),
+    h('button', { onclick: () => pickFile('.asc,.txt', f => loadASC(f)) }, 'DEM (ESRI ASCII)…')),
+    h('div', { class: 'note' }, 'Sidecar: raw KLV (.klv/.bin), CSV with tag-name/key/tag-number headers plus a time column (t, seconds), or this tool\'s JSON export. DEM: geographic WGS84 ESRI ASCII grid, heights MSL.'));
+}
+function pickFile(accept, cb) { const i = h('input', { type: 'file', accept }); i.onchange = () => i.files[0] && cb(i.files[0]); i.click(); }
+
+/* =====================================================================
+   META PANE
+   ===================================================================== */
+function buildMetaPane() {
+  const p = $('#pMeta'); p.innerHTML = '';
+  if (!S.klv.length) { p.innerHTML = '<p class="muted">No KLV metadata.</p>'; return; }
+  p.append(h('div', { class: 'row' },
+    h('button', { onclick: () => metaStep(-1), title: 'Previous packet' }, '◀'),
+    h('span', { id: 'pktLbl', style: 'flex:1;text-align:center' }, ''),
+    h('button', { onclick: () => metaStep(1), title: 'Next packet' }, '▶'),
+    h('label', { title: 'Track the playhead' }, h('input', { type: 'checkbox', id: 'cMetaFollow', checked: S.metaFollow, onchange: e => { S.metaFollow = e.target.checked; } }), ' follow')),
+    h('h3', null, 'Interpolated state'), h('div', { id: 'interpBox' }),
+    h('h3', null, 'Packet (as received)'), h('div', { id: 'pktBox' }),
+    h('details', null, h('summary', { class: 'muted' }, 'raw bytes'), h('pre', { class: 'hex', id: 'hexBox' })));
+}
+function metaStep(d) { S.metaFollow = false; const c = $('#cMetaFollow'); if (c) c.checked = false; S.pktIdx = clamp(S.pktIdx + d, 0, S.klv.length - 1); P.pause(); seek(S.klv[S.pktIdx].t); renderPacket(); }
+function updateMetaPane(t) {
+  if (!$('#pMeta').classList.contains('on') || !S.klv.length) return;
+  if (S.metaFollow) { const i = Math.max(0, bsearchLE(S.klv, t + 1e-6, r => r.t)); if (i !== S.pktIdx) { S.pktIdx = i; renderPacket(); } }
+  const st = S.cur && S.cur.st, box = $('#interpBox');
+  if (box && st) {
+    const keys = ['sensLat', 'sensLon', 'sensAlt', 'platHdg', 'platPitch', 'platRoll', 'relAz', 'relEl', 'relRoll', 'hfov', 'vfov', 'slant', 'fcLat', 'fcLon', 'fcElev'];
+    box.innerHTML = '<table>' + keys.filter(k => st[k] !== undefined).map(k => { const i = KEYINFO.get(k); return '<tr><td class="t">' + i[0] + '</td><td class="k">' + i[2] + '</td><td class="n">' + (isNum(st[k]) ? st[k].toFixed(/Lat|Lon/.test(k) ? 7 : 3) : '–') + '</td><td class="dim">' + i[4] + '</td></tr>'; }).join('') + '</table><div class="note">' + CFG.interp + ' interpolation between packets ' + (st._i + 1) + '/' + (st._i + 2) + ' (f=' + st._f.toFixed(2) + ')</div>';
+  }
+}
+function renderPacket() {
+  const r = S.klv[S.pktIdx]; if (!r) return;
+  const lbl = $('#pktLbl'); if (lbl) lbl.innerHTML = 'pkt ' + (S.pktIdx + 1) + ' / ' + S.klv.length + ' · ' + fmtT(r.t) + ' · ' + (r.csOk === true ? '<span class="okc">CS ok</span>' : r.csOk === false ? '<span class="badc">CS FAIL</span>' : '<span class="muted">no CS</span>');
+  const box = $('#pktBox'); if (!box) return;
+  box.innerHTML = '<table>' + r.items.map(i => '<tr><td class="t">' + i.tag + '</td><td class="k">' + esc(i.name) + '</td><td class="n" style="white-space:normal;word-break:break-all">' + esc(i.disp) + '</td><td class="dim">' + esc(i.units || '') + '</td></tr>').join('') + '</table>';
+  $('#hexBox').textContent = hex(r.raw, 2048);
+}
+
+/* =====================================================================
+   SEARCH
+   ===================================================================== */
+const SRCH = { minNiirs: '', maxNiirs: '', minGraz: '', maxGraz: '', lookFrom: '', lookTo: '', maxSlant: '', maxGsd: '', minCov: 50, step: 0.2, minDur: 0.5, rules: [] };
+const DERIVED = ['niirs', 'gsd', 'graz', 'lookFrom', 'slantGeo', 'cov'];
+function buildSearchPane() {
+  const p = $('#pSearch'); p.innerHTML = '';
+  const num = (k, ph) => h('input', { type: 'number', value: SRCH[k], placeholder: ph || '', step: 'any', oninput: e => { SRCH[k] = e.target.value; } });
+  const keys = [...DERIVED, ...(S.track ? [...S.track.keys].filter(k => k !== 'corners') : [])];
+  p.append(
+    h('h3', null, 'Observation area'),
+    h('div', { class: 'btns' },
+      h('button', { onclick: () => startAOI(), class: S.drawing ? 'on' : '' }, S.drawing ? 'Drawing… (dbl-click / Enter)' : 'Draw AOI on map'),
+      h('button', { onclick: () => aoiFromView() }, 'Use current footprint'),
+      h('button', { onclick: () => aoiFromPick(), disabled: !S.pick }, 'Use pick point'),
+      h('button', { onclick: clearAOI }, 'Clear')),
+    h('div', { class: 'note' }, S.aoi.length && S.aoiDone ? (S.aoi.length === 1 ? 'Point target ' : S.aoi.length + '-vertex polygon ') + 'set. Geometry is measured to the AOI centroid; coverage = share of AOI sample points inside the frame.' : 'No AOI — search uses each frame\'s centre point instead (coverage ignored).'),
+    h('h3', null, 'Image quality & geometry'),
+    h('div', { class: 'grid2' },
+      h('label', null, 'NIIRS ≥ / ≤'), h('div', { class: 'row' }, num('minNiirs', 'min'), num('maxNiirs', 'max')),
+      h('label', null, 'Grazing ° ≥ / ≤'), h('div', { class: 'row' }, num('minGraz', 'min'), num('maxGraz', 'max')),
+      h('label', { title: 'Bearing from the AOI to the sensor (direction the area is viewed from). Wraps through north, e.g. 315 → 45.' }, 'Look-from °T'), h('div', { class: 'row' }, num('lookFrom', 'from'), num('lookTo', 'to')),
+      h('label', null, 'Slant range ≤ m'), num('maxSlant'),
+      h('label', null, 'GSD ≤ m'), num('maxGsd'),
+      h('label', null, 'AOI in frame ≥ %'), num('minCov'),
+      h('label', null, 'Sample step s'), num('step'),
+      h('label', null, 'Min segment s'), num('minDur')),
+    h('h3', null, 'Metadata rules (AND)'),
+    h('div', { id: 'rules' }, SRCH.rules.map((r, i) => h('div', { class: 'rule' },
+      h('select', { onchange: e => { r.key = e.target.value; } }, keys.map(k => h('option', { value: k, selected: k === r.key }, (KEYINFO.get(k) ? KEYINFO.get(k)[0] + ' ' : '') + k))),
+      h('select', { onchange: e => { r.op = e.target.value; } }, ['>', '>=', '<', '<=', '=', '!=', '~'].map(o => h('option', { selected: o === r.op }, o))),
+      h('input', { type: 'text', value: r.val, oninput: e => { r.val = e.target.value; } }),
+      h('button', { onclick: () => { SRCH.rules.splice(i, 1); buildSearchPane(); } }, '×')))),
+    h('div', { class: 'btns' }, h('button', { onclick: () => { SRCH.rules.push({ key: keys[0] || 'niirs', op: '>', val: '' }); buildSearchPane(); } }, '+ rule')),
+    h('div', { class: 'note' }, 'Operator ~ = text contains. Derived fields: niirs, gsd (m), graz (°), lookFrom (°T), slantGeo (m), cov (0–1).'),
+    h('div', { class: 'btns' }, h('button', { class: 'on', onclick: runSearch, disabled: !S.track }, 'Run search'), h('button', { onclick: () => { S.results = []; S.selRes = -1; buildSearchPane(); dirty(); } }, 'Clear results')),
+    h('div', { id: 'srchInfo', class: 'note' }),
+    h('div', { id: 'results' }, S.results.map((r, i) => h('div', { class: 'res' + (i === S.selRes ? ' sel' : ''), onclick: () => selectResult(i) },
+      h('div', { class: 'h' }, h('span', null, '#' + (i + 1) + '  ' + fmtT(r.t0) + ' → ' + fmtT(r.t1)), h('span', null, (r.t1 - r.t0).toFixed(1) + ' s')),
+      h('div', { class: 'muted' }, 'NIIRS ' + fx(r.nMin, 1) + '–' + fx(r.nMax, 1) + ' · graz ' + fx(r.gMean, 0) + '° · look ' + fx(r.look, 0) + '°T' + (isNum(r.cov) ? ' · cov ' + Math.round(r.cov * 100) + '%' : '')),
+      h('div', { class: 'btns' }, h('button', { onclick: e => { e.stopPropagation(); seek(r.best); } }, 'Best frame'), h('button', { onclick: e => { e.stopPropagation(); S.inT = r.t0; S.outT = r.t1; selectResult(i); buildExportPane(); } }, 'Set clip'))))),
+  );
+}
+function startAOI() { S.aoi = []; S.aoiDone = false; S.drawing = true; $('#map').classList.add('draw'); $('#bAoi').classList.add('on'); buildSearchPane(); status('Click AOI vertices on the map; double-click or Enter to finish (single point + Enter = point target), Esc to cancel'); dirty(); }
+function finishAOI() { S.drawing = false; $('#map').classList.remove('draw'); $('#bAoi').classList.remove('on'); S.aoiDone = S.aoi.length > 0; S.cur = null; buildSearchPane(); status(S.aoiDone ? 'AOI set (' + S.aoi.length + ' pt)' : 'AOI cancelled'); dirty(); }
+function clearAOI() { S.aoi = []; S.aoiDone = false; S.drawing = false; $('#map').classList.remove('draw'); $('#bAoi').classList.remove('on'); S.cur = null; buildSearchPane(); dirty(); }
+function aoiFromView() { const c = S.cur; if (!c || !c.fp) return; S.aoi = c.fp.pts.filter((_, i) => i % 6 === 0).map(p => [p.lat, p.lon]); S.aoiDone = true; S.cur = null; buildSearchPane(); dirty(); }
+function aoiFromPick() { if (!S.pick) return; S.aoi = [[S.pick.lat, S.pick.lon]]; S.aoiDone = true; S.cur = null; buildSearchPane(); dirty(); }
+function aoiSamples() {
+  if (S._aoiS && S._aoiS.src === S.aoi) return S._aoiS.pts;
+  const A = S.aoi; let pts = A.map(p => [p[0], p[1]]);
+  const cLat = A.reduce((s, p) => s + p[0], 0) / A.length, cLon = A.reduce((s, p) => s + p[1], 0) / A.length;
+  if (A.length > 2) {
+    const la = A.map(p => p[0]), lo = A.map(p => p[1]), b = [Math.min(...la), Math.min(...lo), Math.max(...la), Math.max(...lo)];
+    for (let i = 1; i < 7; i++) for (let j = 1; j < 7; j++) { const lat = lerp(b[0], b[2], i / 7), lon = lerp(b[1], b[3], j / 7); if (pointInPoly(lat, lon, A)) pts.push([lat, lon]); }
+  }
+  const out = { c: [cLat, cLon], pts };
+  S._aoiS = { src: A, pts: out }; return out;
+}
+function aoiMetrics(st, Pj) {
+  const { c, pts } = aoiSamples();
+  let inside = 0;
+  for (const p of pts) { const uv = Pj.toImage(p[0], p[1], groundElev(p[0], p[1], st)); if (uv && Math.abs(uv[0]) <= 1 && Math.abs(uv[1]) <= 1) inside++; }
+  const g = viewGeom(st, c[0], c[1], groundElev(c[0], c[1], st)) || {};
+  return { cov: inside / pts.length, niirs: g.niirs, gsd: g.gsd, graz: g.graz, lookFrom: g.lookFrom, slantGeo: g.slant };
+}
+function lookIn(v, a, b) { if (!isNum(v)) return false; a = wrap360(a); b = wrap360(b); return a <= b ? v >= a && v <= b : v >= a || v <= b; }
+function runSearch() {
+  if (!S.track) return;
+  const T = S.track, step = Math.max(0.02, parseFloat(SRCH.step) || 0.2);
+  const t0 = Math.max(0, T.t0), t1 = Math.min(S.dur, T.t1);
+  const n = v => v === '' || v === null || v === undefined ? null : parseFloat(v);
+  const F = { minN: n(SRCH.minNiirs), maxN: n(SRCH.maxNiirs), minG: n(SRCH.minGraz), maxG: n(SRCH.maxGraz), lf: n(SRCH.lookFrom), lt: n(SRCH.lookTo), maxS: n(SRCH.maxSlant), maxGsd: n(SRCH.maxGsd), minCov: n(SRCH.minCov) };
+  const useAOI = S.aoi.length && S.aoiDone;
+  const rules = SRCH.rules.filter(r => r.val !== '');
+  const hits = [];
+  const tStart = performance.now();
+  for (let t = t0; t <= t1 + 1e-9; t += step) {
+    const st = T.at(t), Pj = makeProjector(st);
+    let m;
+    if (useAOI) { if (!Pj) continue; m = aoiMetrics(st, Pj); }
+    else {
+      let c = Pj ? Pj.toGround(0, 0) : (isNum(st.fcLat) ? { lat: st.fcLat, lon: st.fcLon, h: refElev(st) } : null);
+      if (!c || c.horizon) continue;
+      const g = viewGeom(st, c.lat, c.lon, c.h) || {};
+      m = { cov: null, niirs: g.niirs, gsd: g.gsd, graz: g.graz, lookFrom: g.lookFrom, slantGeo: g.slant };
+    }
+    if (useAOI && F.minCov !== null && !(m.cov * 100 >= F.minCov)) continue;
+    if (F.minN !== null && !(m.niirs >= F.minN)) continue;
+    if (F.maxN !== null && !(m.niirs <= F.maxN)) continue;
+    if (F.minG !== null && !(m.graz >= F.minG)) continue;
+    if (F.maxG !== null && !(m.graz <= F.maxG)) continue;
+    if (F.lf !== null && F.lt !== null && !lookIn(m.lookFrom, F.lf, F.lt)) continue;
+    if (F.maxS !== null && !(m.slantGeo <= F.maxS)) continue;
+    if (F.maxGsd !== null && !(m.gsd <= F.maxGsd)) continue;
+    let ok = true;
+    for (const r of rules) {
+      const v = DERIVED.includes(r.key) ? m[r.key] : st[r.key];
+      const x = parseFloat(r.val);
+      if (r.op === '~') { if (!String(v ?? '').toLowerCase().includes(r.val.toLowerCase())) { ok = false; break; } continue; }
+      if (!isNum(v)) { ok = false; break; }
+      const pass = { '>': v > x, '>=': v >= x, '<': v < x, '<=': v <= x, '=': Math.abs(v - x) < 1e-9, '!=': Math.abs(v - x) >= 1e-9 }[r.op];
+      if (!pass) { ok = false; break; }
+    }
+    if (ok) hits.push({ t, ...m });
+  }
+  const segs = []; let cur = null;
+  for (const hh of hits) {
+    if (cur && hh.t - cur.last <= step * 1.5 + 1e-9) { cur.items.push(hh); cur.last = hh.t; }
+    else { cur = { items: [hh], last: hh.t }; segs.push(cur); }
+  }
+  const minDur = parseFloat(SRCH.minDur) || 0;
+  S.results = segs.map(s => {
+    const it = s.items, nn = it.map(i => i.niirs).filter(isNum), gg = it.map(i => i.graz).filter(isNum);
+    const sx = it.reduce((a, i) => a + Math.sin((i.lookFrom || 0) * D2R), 0), cx = it.reduce((a, i) => a + Math.cos((i.lookFrom || 0) * D2R), 0);
+    const best = it.reduce((b, i) => (isNum(i.niirs) && (!isNum(b.niirs) || i.niirs > b.niirs)) ? i : b, it[0]);
+    const covs = it.map(i => i.cov).filter(isNum);
+    return { t0: it[0].t, t1: it[it.length - 1].t + step, nMin: nn.length ? Math.min(...nn) : null, nMax: nn.length ? Math.max(...nn) : null, gMean: gg.length ? gg.reduce((a, b) => a + b, 0) / gg.length : null, look: wrap360(Math.atan2(sx, cx) * R2D), cov: covs.length ? covs.reduce((a, b) => a + b, 0) / covs.length : null, best: best.t };
+  }).filter(r => r.t1 - r.t0 >= minDur);
+  S.selRes = -1;
+  buildSearchPane();
+  $('#srchInfo').textContent = S.results.length + ' segment(s), ' + hits.length + ' matching samples of ' + Math.round((t1 - t0) / step) + ' · ' + Math.round(performance.now() - tStart) + ' ms';
+  dirty();
+}
+function selectResult(i) { S.selRes = i; const r = S.results[i]; P.pause(); seek(r.best); buildSearchPane(); $('#srchInfo').textContent = 'Segment #' + (i + 1) + ' selected'; }
+
+/* =====================================================================
+   EXPORT
+   ===================================================================== */
+function clipRange() { return [S.inT ?? 0, S.outT ?? S.dur]; }
+function baseName() { const [a, b] = clipRange(); return (S.name || 'misb').replace(/\.[^.]+$/, '') + (S.inT !== null || S.outT !== null ? '_' + fmtT(a).replace(/[:.]/g, '') + '-' + fmtT(b).replace(/[:.]/g, '') : ''); }
+function buildExportPane() {
+  const p = $('#pExport'); p.innerHTML = '';
+  const [a, b] = clipRange();
+  const hasV = S.video && S.video.samples.length;
+  const canMP4 = hasV && ((S.kind === 'ts' && S.video.playable) || (S.kind === 'mp4' && S.video.entry));
+  const B = (lbl, fn, dis, title) => h('button', { onclick: () => { try { fn(); } catch (e) { console.error(e); status('Export failed: ' + e.message, 'badc'); } }, disabled: !!dis, title }, lbl);
+  p.append(
+    h('h3', null, 'Clip range'),
+    h('div', { class: 'row' }, h('span', { class: 'accc' }, fmtT(a) + ' → ' + fmtT(b)), h('span', { class: 'muted' }, '(' + (b - a).toFixed(2) + ' s' + (S.inT === null && S.outT === null ? ', whole file' : '') + ')')),
+    h('div', { class: 'note' }, 'Set with In/Out (I / O keys), drag the timeline handles, or "Set clip" on a search result. Video cuts snap back to the preceding key frame so the clip decodes cleanly.'),
+    h('h3', null, 'Motion imagery'),
+    h('div', { class: 'btns' },
+      B('MPEG-TS clip (.ts)', exportTS, S.kind !== 'ts' || !hasV, 'Packet-level cut — all PIDs incl. KLV preserved byte-exact (MISB ST 1402 transport)'),
+      B('MP4 + KLV track (.mp4)', exportMP4, !canMP4, 'Video copied bit-exact; KLV as ISO BMFF timed-metadata track (urim, UAS LS UL) referenced to video'),
+      B('Burn-in WebM (real-time)', exportWebM, !S.playable, 'Records the clip with a metadata overlay — plays the clip in real time')),
+    h('h3', null, 'Metadata'),
+    h('div', { class: 'btns' },
+      B('Raw KLV (.klv)', exportKLV, !S.klv.length),
+      B('Packets CSV', exportCSVPackets, !S.klv.length),
+      B('Per-frame CSV', exportCSVFrames, !S.track),
+      B('JSON', exportJSON, !S.klv.length)),
+    h('h3', null, 'Geospatial'),
+    h('div', { class: 'btns' },
+      B('GeoJSON', exportGeoJSON, !S.track),
+      B('KML', exportKML, !S.track)),
+    h('div', { class: 'note' }, 'Sensor track (3D), frame-centre track, footprints every ' + CFG.histStep + ' s (current footprint model), AOI and search segments, limited to the clip range.'),
+    h('h3', null, 'Snapshots'),
+    h('div', { class: 'btns' },
+      B('Frame PNG', exportFramePNG, !S.playable),
+      B('Map view PNG', exportMapPNG, false, 'Fails if a basemap without CORS is shown')),
+  );
+}
+function clipSamples() {
+  const v = S.video, ts = v.timescale, [a, b] = clipRange();
+  const toT = s => (s.pts - S.minPts) / ts + (S.kind === 'mp4' && v.track ? v.track.emptyStart : 0);
+  let k = 0; for (let i = 0; i < v.samples.length; i++) { if (v.samples[i].key && toT(v.samples[i]) <= a + 1e-6) k = i; if (toT(v.samples[i]) > a + 5) break; }
+  let e = v.samples.length;
+  for (let i = k + 1; i < v.samples.length; i++) if ((v.samples[i].dts - S.minPts) / ts > b + 1e-6 && (S.kind === 'ts' ? true : true)) { e = i; break; }
+  return { k, e, tStart: Math.min(...v.samples.slice(k, e).map(toT)) };
+}
+function exportTS() {
+  const { k, e } = clipSamples(), v = S.video;
+  const a = v.samples[k].off, b = e < v.samples.length ? v.samples[e].off : S.u8.length;
+  // KLV PES time-stamped inside the clip but multiplexed ahead of the key frame: carry them across
+  const { tStart } = clipSamples(), [, tEnd] = clipRange(), ps = S.ts.det.ps, pre = [];
+  for (const r of S.klv) {
+    if (r.off >= a || r.t < tStart - 1e-6 || r.t > tEnd || typeof r.src !== 'number') continue;
+    for (let q = r.off, first = true; q + 188 <= a; q += ps) {
+      if (S.u8[q] !== 0x47) break;
+      const pid = ((S.u8[q + 1] & 0x1F) << 8) | S.u8[q + 2];
+      if (pid !== r.src) continue;
+      if (!first && (S.u8[q + 1] & 0x40)) break;
+      pre.push(S.u8.slice(q, q + 188)); first = false;
+    }
+  }
+  const head = [S.ts.firstPAT, S.ts.firstPMT, ...pre].filter(Boolean);
+  download(baseName() + '.ts', cutTS(S.u8, S.ts.det, a, b, concatU8(head), null));
+  status('TS clip exported from key frame ' + (k + 1) + (pre.length ? ' (+' + pre.length + ' leading KLV packets)' : ''));
+}
+function exportMP4() {
+  const { k, e, tStart } = clipSamples(), v = S.video, [, b] = clipRange();
+  const samples = v.samples.slice(k, e).map(s => S.kind === 'ts' ? s : { ...s, src: S.u8.subarray(s.off, s.off + s.size) });
+  const entry = S.kind === 'ts' ? avc1Entry(v.sps, v.pps, v.width, v.height) : v.entry;
+  const klv = S.klv.filter(r => r.t >= tStart - 1e-6 && r.t <= b + 1e-6).map(r => ({ t: r.t - tStart, raw: r.raw }));
+  download(baseName() + '.mp4', writeMP4({ timescale: v.timescale, entry, width: v.width || CFG.imgW, height: v.height || CFG.imgH, samples }, klv));
+  status('MP4 exported: ' + samples.length + ' frames, ' + klv.length + ' KLV samples');
+}
+const inClip = r => { const [a, b] = clipRange(); return r.t >= a - 1e-6 && r.t <= b + 1e-6; };
+function exportKLV() { download(baseName() + '.klv', S.klv.filter(inClip).map(r => r.raw)); }
+const csvCell = v => v === null || v === undefined ? '' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toPrecision(10)) : '"' + String(v).replace(/"/g, '""') + '"';
+function exportCSVPackets() {
+  const R = S.klv.filter(inClip), keys = [];
+  for (const r of R) for (const k in r.f) if (k !== 'corners' && k !== 'security' && !keys.includes(k)) keys.push(k);
+  keys.sort((x, y) => (KEYINFO.get(x) || [999])[0] - (KEYINFO.get(y) || [999])[0]);
+  const lines = [['t', 'utc', 'checksum_ok', ...keys].join(',')];
+  for (const r of R) lines.push([r.t.toFixed(4), csvCell(fmtUTC(r.f.ts)), r.csOk === null ? '' : r.csOk, ...keys.map(k => csvCell(r.f[k]))].join(','));
+  download(baseName() + '_packets.csv', lines.join('\n'), 'text/csv');
+}
+function exportCSVFrames() {
+  const [a, b] = clipRange(), fr = S.frames.length ? S.frames.filter(t => t >= a - 1e-6 && t <= b + 1e-6) : [];
+  if (!fr.length) for (let t = a; t <= b; t += 0.1) fr.push(t);
+  const keys = ['sensLat', 'sensLon', 'sensAlt', 'platHdg', 'platPitch', 'platRoll', 'relAz', 'relEl', 'relRoll', 'hfov', 'vfov', 'slant', 'fcLat', 'fcLon', 'fcElev'];
+  const fpCols = ['UL', 'UR', 'LR', 'LL'].flatMap(c => [c + '_lat', c + '_lon', c + '_h']);
+  const lines = [['frame', 't', 'utc', ...keys, 'fp_model', ...fpCols, 'ctr_lat', 'ctr_lon', 'ctr_h', 'graz', 'look_from', 'gsd', 'niirs_est'].join(',')];
+  fr.forEach((t, i) => {
+    const st = S.track.at(t), fp = footprint(st, 1), c = fp && fp.center, g = c && !c.horizon ? viewGeom(st, c.lat, c.lon, c.h) : null;
+    lines.push([frameIndex(t) + 1, t.toFixed(4), csvCell(fmtUTC(st.ts)), ...keys.map(k => csvCell(st[k])), fp ? fp.kind : '',
+    ...(fp ? fp.pts.flatMap(p => p.horizon ? ['', '', ''] : [p.lat.toFixed(7), p.lon.toFixed(7), fx(p.h, 1)]) : fpCols.map(() => '')),
+    c && !c.horizon ? c.lat.toFixed(7) : '', c && !c.horizon ? c.lon.toFixed(7) : '', c && !c.horizon ? fx(c.h, 1) : '',
+    g ? fx(g.graz, 2) : '', g ? fx(g.lookFrom, 1) : '', g && isNum(g.gsd) ? g.gsd.toFixed(3) : '', g && isNum(g.niirs) ? g.niirs.toFixed(2) : ''].join(','));
+  });
+  download(baseName() + '_frames.csv', lines.join('\n'), 'text/csv');
+}
+function exportJSON() {
+  const out = { generator: 'MISB Viewer ' + BUILD.ver + ' build ' + BUILD.build, source: S.name, clip: clipRange(), settings: { interp: CFG.interp, footprint: CFG.footprint, klvOffset: CFG.klvOffset }, records: S.klv.filter(inClip).map(r => ({ t: +r.t.toFixed(6), utc: fmtUTC(r.f.ts), checksumOk: r.csOk, fields: r.f })) };
+  download(baseName() + '.json', JSON.stringify(out, null, 1), 'application/json');
+}
+function geoFeatures() {
+  const [a, b] = clipRange(), F = [];
+  const tp = S.trackPts.filter(p => p[3] >= a && p[3] <= b);
+  if (tp.length > 1) F.push({ type: 'Feature', properties: { name: 'Sensor track', kind: 'sensor_track', t0: a, t1: b }, geometry: { type: 'LineString', coordinates: tp.map(p => [p[1], p[0], isNum(p[2]) ? +p[2].toFixed(1) : 0]) } });
+  const fc = S.fcPts.filter(p => p[3] >= a && p[3] <= b);
+  if (fc.length > 1) F.push({ type: 'Feature', properties: { name: 'Frame centre track', kind: 'frame_centre_track' }, geometry: { type: 'LineString', coordinates: fc.map(p => [p[1], p[0]]) } });
+  for (const hh of S.hist.filter(x => x.t >= a && x.t <= b)) {
+    if (hh.pts.some(p => p.horizon)) continue;
+    const st = S.track.at(hh.t), c = footprint(st, 1).center, g = c && !c.horizon ? viewGeom(st, c.lat, c.lon, c.h) : null;
+    const ring = hh.pts.map(p => [+p.lon.toFixed(7), +p.lat.toFixed(7)]); ring.push(ring[0]);
+    F.push({ type: 'Feature', properties: { kind: 'footprint', t: +hh.t.toFixed(3), utc: fmtUTC(st.ts), niirs_est: g && isNum(g.niirs) ? +g.niirs.toFixed(2) : null, gsd_m: g && isNum(g.gsd) ? +g.gsd.toFixed(3) : null, grazing_deg: g ? +g.graz.toFixed(2) : null }, geometry: { type: 'Polygon', coordinates: [ring] } });
+  }
+  if (S.aoi.length && S.aoiDone) F.push(S.aoi.length === 1 ? { type: 'Feature', properties: { kind: 'aoi' }, geometry: { type: 'Point', coordinates: [S.aoi[0][1], S.aoi[0][0]] } } : { type: 'Feature', properties: { kind: 'aoi' }, geometry: { type: 'Polygon', coordinates: [[...S.aoi.map(p => [p[1], p[0]]), [S.aoi[0][1], S.aoi[0][0]]]] } });
+  S.results.forEach((r, i) => { const tp2 = S.trackPts.filter(p => p[3] >= r.t0 && p[3] <= r.t1); if (tp2.length > 1) F.push({ type: 'Feature', properties: { kind: 'search_segment', id: i + 1, t0: r.t0, t1: r.t1, niirs_min: r.nMin, niirs_max: r.nMax, look_from: r.look }, geometry: { type: 'LineString', coordinates: tp2.map(p => [p[1], p[0], isNum(p[2]) ? +p[2].toFixed(1) : 0]) } }); });
+  return F;
+}
+function exportGeoJSON() { download(baseName() + '.geojson', JSON.stringify({ type: 'FeatureCollection', name: S.name, features: geoFeatures() }), 'application/geo+json'); }
+function exportKML() {
+  const F = geoFeatures(), x = s => esc(String(s));
+  const coords = c => c.map(p => p.join(',')).join(' ');
+  const pm = f => {
+    const g = f.geometry, k = f.properties.kind, nm = f.properties.name || k + (f.properties.t !== undefined ? ' ' + fmtT(f.properties.t) : '');
+    const ext = '<ExtendedData>' + Object.entries(f.properties).map(([a, b]) => '<Data name="' + x(a) + '"><value>' + x(b ?? '') + '</value></Data>').join('') + '</ExtendedData>';
+    let geom = '';
+    if (g.type === 'LineString') geom = '<LineString>' + (k === 'sensor_track' || k === 'search_segment' ? '<altitudeMode>absolute</altitudeMode>' : '<tessellate>1</tessellate>') + '<coordinates>' + coords(g.coordinates) + '</coordinates></LineString>';
+    else if (g.type === 'Polygon') geom = '<Polygon><tessellate>1</tessellate><outerBoundaryIs><LinearRing><coordinates>' + coords(g.coordinates[0]) + '</coordinates></LinearRing></outerBoundaryIs></Polygon>';
+    else geom = '<Point><coordinates>' + g.coordinates.join(',') + '</coordinates></Point>';
+    return '<Placemark><name>' + x(nm) + '</name><styleUrl>#' + k + '</styleUrl>' + ext + geom + '</Placemark>';
+  };
+  const st = (id, line, poly) => '<Style id="' + id + '"><LineStyle><color>' + line + '</color><width>2</width></LineStyle><PolyStyle><color>' + poly + '</color></PolyStyle></Style>';
+  const kml = '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>' + x(S.name) + '</name>' +
+    st('sensor_track', 'ffffffff', '00ffffff') + st('frame_centre_track', 'aa30a0f0', '00ffffff') + st('footprint', 'cc30a0f0', '2030a0f0') + st('aoi', 'ffffc36c', '30ffc36c') + st('search_segment', 'ffffc36c', '00ffffff') +
+    F.map(pm).join('\n') + '</Document></kml>';
+  download(baseName() + '.kml', kml, 'application/vnd.google-earth.kml+xml');
+}
+function exportFramePNG() {
+  const c = h('canvas'); c.width = vid.videoWidth; c.height = vid.videoHeight;
+  c.getContext('2d').drawImage(vid, 0, 0);
+  c.toBlob(b => download(baseName().replace(/_[^_]*$/, '') + '_' + fmtT(P.time()).replace(/[:.]/g, '') + '.png', b), 'image/png');
+}
+function exportMapPNG() {
+  MapV.draw();
+  try { MapV.cv.toBlob(b => b ? download((S.name || 'map').replace(/\.[^.]+$/, '') + '_map.png', b) : status('Map export blocked (basemap tiles without CORS)', 'badc'), 'image/png'); }
+  catch (e) { status('Map export blocked: ' + e.message, 'badc'); }
+}
+function exportWebM() {
+  if (!window.MediaRecorder) { status('MediaRecorder not available', 'badc'); return; }
+  const [a, b] = clipRange(), W = vid.videoWidth, H = vid.videoHeight, c = h('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d'), stream = c.captureStream(Math.round(S.fps) || 30);
+  const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
+  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8e6 }), chunks = [];
+  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onstop = () => { download(baseName() + '_burnin.webm', new Blob(chunks, { type: 'video/webm' })); status('WebM exported'); };
+  P.pause(); seek(a);
+  const fs = Math.max(14, Math.round(H / 40));
+  const draw = () => {
+    g.drawImage(vid, 0, 0, W, H);
+    const cur = S.cur, st = cur && cur.st, gg = cur && cur.geo;
+    if (st) {
+      const L = [fmtUTC(st.ts), 'SENSOR ' + fdeg(st.sensLat, 5) + ' ' + fdeg(st.sensLon, 5) + '  ALT ' + fx(sensAltMSL(st), 0) + ' m', 'CTR ' + (cur.center ? fdeg(cur.center.lat, 5) + ' ' + fdeg(cur.center.lon, 5) : '–') + '  SLANT ' + fx(gg && gg.slant, 0) + ' m', 'HFOV ' + fx(st.hfov, 2) + '°  GSD ' + (gg && isNum(gg.gsd) ? gg.gsd.toFixed(2) : '–') + ' m  NIIRS≈' + (gg && isNum(gg.niirs) ? gg.niirs.toFixed(1) : '–')];
+      g.font = fs + 'px ' + getComputedStyle(document.body).fontFamily; g.fillStyle = 'rgba(0,0,0,.5)'; g.fillRect(0, H - L.length * fs * 1.3 - 10, W, L.length * fs * 1.3 + 10);
+      g.fillStyle = '#fff'; L.forEach((l, i) => g.fillText(l, 10, H - (L.length - i - 1) * fs * 1.3 - 10));
+      if (S.sec && S.sec.classification) { g.fillStyle = 'rgba(0,0,0,.5)'; g.fillRect(0, 0, W, fs * 1.5); g.fillStyle = '#fff'; g.textAlign = 'center'; g.fillText(S.sec.classification, W / 2, fs * 1.1); g.textAlign = 'left'; }
+    }
+    if (rec.state === 'recording') { if (vid.currentTime >= b || vid.ended) { rec.stop(); P.pause(); } else requestAnimationFrame(draw); }
+  };
+  const go = () => { vid.removeEventListener('seeked', go); rec.start(250); vid.playbackRate = 1; P.play(); requestAnimationFrame(draw); status('Recording burn-in WebM… ' + (b - a).toFixed(1) + ' s'); };
+  vid.addEventListener('seeked', go);
+}
+
+/* =====================================================================
+   SIDECARS & DEM FILES
+   ===================================================================== */
+async function loadASC(file) {
+  try { DEM.parseASC(await file.text()); CFG.demMode = 'asc'; DEM.reset(); computeDerived(); buildSetPane(); status('DEM loaded: ' + DEM.asc.ncols + '×' + DEM.asc.nrows + ', ' + fx(DEM.minElev, 0) + '…' + fx(DEM.maxElev, 0) + ' m'); dirty(); }
+  catch (e) { status('DEM: ' + e.message, 'badc'); }
+}
+const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+const ALIAS = (() => { const m = new Map(); for (const [tag, key, name] of TAGS) { m.set(norm(key), key); m.set(norm(name), key); m.set(String(tag), key); } Object.entries({ lat: 'sensLat', latitude: 'sensLat', lon: 'sensLon', long: 'sensLon', longitude: 'sensLon', alt: 'sensAlt', altitude: 'sensAlt', heading: 'platHdg', yaw: 'platHdg', pitch: 'platPitch', roll: 'platRoll', hfov: 'hfov', vfov: 'vfov', utc: 'ts' }).forEach(([a, k]) => m.set(a, k)); return m; })();
+async function loadSidecar(file) {
+  const name = file.name.toLowerCase();
+  let recs = [];
+  try {
+    if (/\.(klv|bin)$/.test(name)) {
+      const r = scanKLV(new Uint8Array(await file.arrayBuffer()));
+      recs = r.packets.map(k => makeRec(k.raw, null, k.pos, 'sidecar'));
+      assignTimes(recs, 1, 0);
+    } else if (/\.json$/.test(name)) {
+      const j = JSON.parse(await file.text());
+      const arr = j.records || j;
+      recs = arr.map(o => ({ raw: new Uint8Array(0), pts: null, f: o.fields || o, items: Object.entries(o.fields || o).filter(([k]) => k !== 'corners').map(([k, v]) => { const i = KEYINFO.get(k); return { tag: i ? i[0] : '', key: k, name: i ? i[2] : k, val: v, disp: typeof v === 'object' ? JSON.stringify(v) : String(v), units: i ? i[4] : '' }; }), csOk: o.checksumOk ?? null, t: (o.t ?? 0) + CFG.klvOffset }));
+    } else if (/\.csv$/.test(name)) {
+      const lines = (await file.text()).split(/\r?\n/).filter(l => l.trim());
+      const split = l => { const o = []; let cur = '', q = false; for (let i = 0; i < l.length; i++) { const ch = l[i]; if (q) { if (ch === '"' && l[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; } else if (ch === '"') q = true; else if (ch === ',') { o.push(cur); cur = ''; } else cur += ch; } o.push(cur); return o; };
+      const hdr = split(lines[0]), map = hdr.map(hh => { const n = norm(hh); if (['t', 'time', 'seconds', 'sec', 'elapsed'].includes(n)) return '__t'; return ALIAS.get(n) || null; });
+      if (!map.some(Boolean)) throw new Error('no recognised columns');
+      for (let i = 1; i < lines.length; i++) {
+        const c = split(lines[i]), f = {}; let t = null;
+        map.forEach((k, j) => { if (!k || c[j] === undefined || c[j] === '') return; const v = c[j]; if (k === '__t') t = parseFloat(v); else if (k === 'ts') f.ts = /^\d+$/.test(v) ? parseFloat(v) : Date.parse(v.replace(' ', 'T')) * 1000; else f[k] = isNaN(+v) ? v : +v; });
+        if ([82, 83, 84, 85, 86, 87, 88, 89].every(tg => isNum(f[TAG.get(tg)[1]]))) f.corners = [[f.c1Lat, f.c1Lon], [f.c2Lat, f.c2Lon], [f.c3Lat, f.c3Lon], [f.c4Lat, f.c4Lon]];
+        recs.push({ raw: new Uint8Array(0), pts: null, f, items: Object.entries(f).filter(([k]) => k !== 'corners').map(([k, v]) => { const ii = KEYINFO.get(k); return { tag: ii ? ii[0] : '', key: k, name: ii ? ii[2] : k, val: v, disp: k === 'ts' ? fmtUTC(v) : String(v), units: ii ? ii[4] : '' }; }), csOk: null, t });
+      }
+      const t0 = recs.find(r => isNum(r.f.ts));
+      recs.forEach(r => { if (!isNum(r.t)) r.t = t0 && isNum(r.f.ts) ? (r.f.ts - t0.f.ts) / 1e6 : 0; r.t += CFG.klvOffset; });
+    } else { status('Unsupported sidecar: ' + file.name, 'badc'); return; }
+  } catch (e) { status('Sidecar error: ' + e.message, 'badc'); return; }
+  if (!recs.length) { status('No metadata found in ' + file.name, 'badc'); return; }
+  recs.sort((a, b) => a.t - b.t);
+  S.sidecar = recs; S.klv = recs;
+  if (!S.name) { S.name = file.name; $('#fileName').textContent = file.name; $('#drop').style.display = 'none'; }
+  S.warnings.push('Metadata from sidecar ' + file.name + ' (' + recs.length + ' records)');
+  finishLoad();
+  status('Sidecar loaded: ' + recs.length + ' records');
+}
+
+/* =====================================================================
+   SETTINGS
+   ===================================================================== */
+function updateDemStatus() {
+  const e = $('#demStat'); if (!e) return;
+  e.textContent = CFG.demMode === 'terrarium' ? DEM.loaded + ' tiles loaded, ' + DEM.pending + ' pending, ' + DEM.failed + ' failed' + (isFinite(DEM.minElev) ? ' · ' + fx(DEM.minElev, 0) + '…' + fx(DEM.maxElev, 0) + ' m' : '') + (DEM.failed && !DEM.loaded ? ' — network blocked? use a mirror URL or an ASCII grid' : '')
+    : CFG.demMode === 'asc' ? (DEM.asc ? DEM.asc.ncols + '×' + DEM.asc.nrows + ' grid, ' + fx(DEM.minElev, 0) + '…' + fx(DEM.maxElev, 0) + ' m' : 'no grid loaded') : 'flat ground: KLV frame-centre elevation (tag 25/78) or ' + CFG.flatElev + ' m';
+}
+function buildSetPane() {
+  const p = $('#pSet'); p.innerHTML = '';
+  const apply = (geo) => { if (geo) { DEM.reset(); computeDerived(); preloadDEM(); } S.cur = null; S.orthoCache = null; updateDemStatus(); buildExportPane(); dirty(); };
+  const sel = (k, opts, geo, after) => h('select', { onchange: e => { CFG[k] = isNaN(+e.target.value) ? e.target.value : +e.target.value; after && after(); apply(geo); } }, opts.map(([v, l]) => h('option', { value: v, selected: String(CFG[k]) === String(v) }, l)));
+  const num = (k, geo, st = 'any', after) => h('input', { type: 'number', value: CFG[k], step: st, onchange: e => { CFG[k] = parseFloat(e.target.value) || 0; after && after(); apply(geo); } });
+  const txt = (k, geo, after) => h('input', { type: 'text', value: CFG[k], onchange: e => { CFG[k] = e.target.value.trim(); after && after(); apply(geo); } });
+  const retime = () => { if (S.kind === 'ts' && S.ts) { /* re-derive */ } };
+  p.append(
+    h('h3', null, 'Basemap'),
+    h('div', { class: 'field' }, sel('basemap', [['esri', 'Esri World Imagery'], ['osm', 'OpenStreetMap'], ['topo', 'OpenTopoMap'], ['custom', 'Custom XYZ URL'], ['none', 'None (offline graticule)']], false, () => MapV.render())),
+    h('div', { class: 'field' }, h('label', null, 'Custom XYZ template ({z}/{x}/{y})'), txt('customUrl', false, () => MapV.render())),
+    h('label', null, h('input', { type: 'checkbox', checked: CFG.tileCors, onchange: e => { CFG.tileCors = e.target.checked; MapV.tiles.clear(); MapV.render(); } }), ' request tiles with CORS (needed for ortho/map PNG export)'),
+    h('h3', null, 'Elevation model'),
+    h('div', { class: 'field' }, sel('demMode', [['flat', 'Flat (KLV frame-centre elevation)'], ['terrarium', 'Terrarium tiles (online / mirror)'], ['asc', 'ESRI ASCII grid (loaded file)']], true)),
+    h('div', { class: 'field' }, h('label', null, 'Terrarium URL template'), txt('demUrl', true)),
+    h('div', { class: 'grid2' }, h('label', null, 'Terrarium zoom (10–14)'), num('demZoom', true, 1), h('label', null, 'Flat fallback elev m'), num('flatElev', true), h('label', null, 'Geoid N m (HAE→MSL)'), num('geoidOffset', true), h('label', null, 'Max ray range m'), num('maxRange', true, 1000)),
+    h('div', { class: 'btns' }, h('button', { onclick: () => pickFile('.asc,.txt', f => loadASC(f)) }, 'Load ASCII grid…')),
+    h('div', { class: 'note', id: 'demStat' }),
+    h('h3', null, 'Footprint & interpolation'),
+    h('div', { class: 'grid2' },
+      h('label', null, 'Footprint source'), sel('footprint', [['auto', 'Auto (pose → corners)'], ['computed', 'Sensor model only'], ['metadata', 'KLV corners only']], true),
+      h('label', null, 'Interpolation'), sel('interp', [['nearest', 'Nearest packet'], ['linear', 'Linear (angle-aware)'], ['spline', 'Catmull-Rom position']], true),
+      h('label', { title: 'How long a sparse tag value is carried forward' }, 'Hold sparse tags s'), num('holdMax', true, 0.5, () => { S.track = S.klv.length ? new Track(S.klv) : null; }),
+      h('label', { title: 'Shift metadata against video (positive = later)' }, 'KLV time offset s'), h('input', { type: 'number', value: CFG.klvOffset, step: 0.01, onchange: e => { const nv = parseFloat(e.target.value) || 0, d = nv - CFG.klvOffset; CFG.klvOffset = nv; S.klv.forEach(r => r.t += d); S.track = S.klv.length ? new Track(S.klv) : null; apply(true); } }),
+      h('label', null, 'History step s'), num('histStep', true, 0.5),
+      h('label', null, 'Image size override'), h('div', { class: 'row' }, num('imgW', true, 1), num('imgH', true, 1))),
+    h('label', null, h('input', { type: 'checkbox', id: 'cMetaCorners', checked: true, onchange: dirty }), ' show encoder (KLV) corners when using the sensor model'),
+    h('h3', null, 'Pseudo-ortho'),
+    h('div', { class: 'grid2' }, h('label', null, 'Mesh columns'), num('orthoGrid', false, 1), h('label', null, 'Opacity'), h('input', { type: 'range', min: 0.1, max: 1, step: 0.05, value: CFG.orthoAlpha, oninput: e => { CFG.orthoAlpha = +e.target.value; dirty(); } })),
+    h('div', { class: 'note' }, 'Each mesh node is a ray from the sensor model through the image, intersected with the DEM (or the KLV corner homography when pose is absent). The frame is texture-mapped per triangle — terrain-following, but not a rigorous orthorectification.'),
+    h('h3', null, 'NIIRS estimate'),
+    h('div', { class: 'grid2' },
+      h('label', null, 'Equation'), sel('giqe', [[4, 'GIQE 4'], [5, 'GIQE 5']], true),
+      h('label', null, 'RER'), num('rer', true, 0.05), h('label', null, 'H (overshoot) [4]'), num('hgain', true, 0.05), h('label', null, 'G/SNR [4]'), num('gsnr', true, 0.01), h('label', null, 'SNR [5]'), num('snr', true, 1)),
+    h('div', { class: 'note' }, 'Geometric estimate only: GSD from slant range, IFOV (FOV / pixels) and grazing angle at the frame centre or AOI. Optics, motion blur and compression are folded into RER/H/SNR defaults; this is a still-image GIQE figure, not a V-NIIRS (MISB ST 0901) rating.'),
+    h('h3', null, 'Keyboard'),
+    h('div', { class: 'note', html: '<kbd>Space</kbd> play · <kbd>←</kbd>/<kbd>→</kbd> frame · <kbd>Shift</kbd>+arrows 1 s · <kbd>I</kbd>/<kbd>O</kbd> clip in/out · <kbd>[</kbd>/<kbd>]</kbd> go to in/out · <kbd>Home</kbd>/<kbd>End</kbd> · <kbd>F</kbd> fit map · <kbd>Esc</kbd> cancel AOI' }),
+    h('div', { class: 'note dim' }, 'MISB Viewer ' + BUILD.ver + ' build ' + BUILD.build + ' — single file, no external libraries, no embedded binary.'),
+  );
+  updateDemStatus();
+}
+
+/* =====================================================================
+   WIRING
+   ===================================================================== */
+function init() {
+  $('#ver').textContent = BUILD.ver + ' · build ' + BUILD.build;
+  MapV.init($('#map'));
+  // tabs
+  for (const b of document.querySelectorAll('#tabs button')) b.onclick = () => {
+    document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('on', x === b));
+    document.querySelectorAll('.pane').forEach(x => x.classList.toggle('on', x.id === b.dataset.p));
+    if (b.dataset.p === 'pMeta') { S.pktIdx = -1; updateMetaPane(P.time()); }
+  };
+  // file open / drop
+  $('#btnOpen').onclick = () => $('#fileIn').click();
+  $('#fileIn').onchange = e => { openFiles(e.target.files); e.target.value = ''; };
+  addEventListener('dragover', e => { e.preventDefault(); document.body.classList.add('dragover'); });
+  addEventListener('dragleave', e => { if (e.target === document.documentElement || !e.relatedTarget) document.body.classList.remove('dragover'); });
+  addEventListener('drop', e => { e.preventDefault(); document.body.classList.remove('dragover'); if (e.dataTransfer.files.length) openFiles(e.dataTransfer.files); });
+  // transport
+  $('#bPlay').onclick = () => P.toggle();
+  $('#bPrev').onclick = () => stepFrame(-1); $('#bNext').onclick = () => stepFrame(1);
+  $('#bBack').onclick = () => seek(P.time() - 1); $('#bFwd').onclick = () => seek(P.time() + 1);
+  $('#bStart').onclick = () => seek(S.inT ?? 0); $('#bEnd').onclick = () => seek(S.outT ?? S.dur);
+  $('#rate').onchange = e => { vid.playbackRate = +e.target.value; };
+  $('#bIn').onclick = () => { S.inT = P.time(); if (S.outT !== null && S.outT < S.inT) S.outT = null; buildExportPane(); dirty(); };
+  $('#bOut').onclick = () => { S.outT = P.time(); if (S.inT !== null && S.inT > S.outT) S.inT = null; buildExportPane(); dirty(); };
+  $('#bClr').onclick = () => { S.inT = S.outT = null; buildExportPane(); dirty(); };
+  // chart picker
+  const cs = h('select', { title: 'Timeline chart', onchange: e => { S.chartKey = e.target.value; dirty(); } }, Object.entries(CHARTS).map(([k, [l]]) => h('option', { value: k }, l)));
+  $('#ctrl .row:nth-child(3)').append(h('span', { class: 'muted', style: 'margin-left:auto' }, 'chart'), cs);
+  // map tools
+  $('#bFit').onclick = () => S.bbox && MapV.fit(S.bbox);
+  $('#bFollow').onclick = e => { S.follow = !S.follow; e.target.classList.toggle('on', S.follow); dirty(); };
+  $('#bOrtho').onclick = e => { S.ortho = !S.ortho; e.target.classList.toggle('on', S.ortho); if (S.ortho && !S.playable) status('Ortho needs a playable video'); dirty(); };
+  $('#bHist').classList.add('on');
+  $('#bHist').onclick = e => { S.showHist = !S.showHist; e.target.classList.toggle('on', S.showHist); dirty(); };
+  $('#bAoi').onclick = () => S.drawing ? finishAOI() : startAOI();
+  $('#bAoiClr').onclick = clearAOI;
+  // map interaction
+  const cv = $('#map'); let drag = null, moved = false;
+  cv.addEventListener('pointerdown', e => { drag = [e.clientX, e.clientY]; moved = false; cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener('pointermove', e => {
+    const r = cv.getBoundingClientRect(), [la, lo] = MapV.fromScr(e.clientX - r.left, e.clientY - r.top);
+    const el = DEM.active() ? DEM.sample(la, lo) : null;
+    $('#mapRead').textContent = la.toFixed(6) + ', ' + lo.toFixed(6) + (el !== null ? ' · ' + el.toFixed(0) + ' m' : '') + ' · z' + MapV.z.toFixed(1);
+    if (!drag) return;
+    const dx = e.clientX - drag[0], dy = e.clientY - drag[1];
+    if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+    if (moved) { cv.classList.add('drag'); MapV.pan(dx, dy); drag = [e.clientX, e.clientY]; if (S.follow) { S.follow = false; $('#bFollow').classList.remove('on'); } }
+  });
+  cv.addEventListener('pointerup', e => {
+    cv.classList.remove('drag');
+    if (drag && !moved && S.drawing) { const r = cv.getBoundingClientRect(); S.aoi.push(MapV.fromScr(e.clientX - r.left, e.clientY - r.top)); dirty(); }
+    drag = null;
+  });
+  cv.addEventListener('dblclick', e => { e.preventDefault(); if (S.drawing) { if (S.aoi.length > 1) S.aoi.pop(); finishAOI(); } else { const r = cv.getBoundingClientRect(); MapV.zoomAt(1, e.clientX - r.left, e.clientY - r.top); } });
+  cv.addEventListener('wheel', e => { e.preventDefault(); const r = cv.getBoundingClientRect(); MapV.zoomAt(-e.deltaY * (e.deltaMode ? 0.05 : 0.0025), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  // split
+  const sp = $('#split'); let sy = null, sh = 0;
+  sp.addEventListener('pointerdown', e => { sy = e.clientY; sh = $('#bottom').getBoundingClientRect().height; sp.setPointerCapture(e.pointerId); });
+  sp.addEventListener('pointermove', e => { if (sy === null) return; document.documentElement.style.setProperty('--bottomH', clamp(sh - (e.clientY - sy), 120, innerHeight - 260) + 'px'); dirty(); });
+  sp.addEventListener('pointerup', () => { sy = null; });
+  // keys
+  addEventListener('keydown', e => {
+    if (e.target.matches('input,select,textarea')) return;
+    const k = e.key;
+    if (k === ' ') { e.preventDefault(); P.toggle(); }
+    else if (k === 'ArrowLeft') { e.preventDefault(); e.shiftKey ? seek(P.time() - 1) : stepFrame(-1); }
+    else if (k === 'ArrowRight') { e.preventDefault(); e.shiftKey ? seek(P.time() + 1) : stepFrame(1); }
+    else if (k === 'i' || k === 'I') $('#bIn').click();
+    else if (k === 'o' || k === 'O') $('#bOut').click();
+    else if (k === '[') seek(S.inT ?? 0);
+    else if (k === ']') seek(S.outT ?? S.dur);
+    else if (k === 'Home') seek(0);
+    else if (k === 'End') seek(S.dur);
+    else if (k === 'f' || k === 'F') S.bbox && MapV.fit(S.bbox);
+    else if (k === 'Enter' && S.drawing) finishAOI();
+    else if (k === 'Escape' && S.drawing) { S.aoi = []; finishAOI(); }
+  });
+  // follow camera
+  const origDraw = MapV.draw.bind(MapV);
+  MapV.draw = function () {
+    if (S.follow && S.cur && S.cur.fp) {
+      const pts = S.cur.fp.pts.filter(p => !p.horizon);
+      if (pts.length) { const la = pts.reduce((s, p) => s + p.lat, 0) / pts.length, lo = pts.reduce((s, p) => s + p.lon, 0) / pts.length; this.lat = la; this.lon = lo; }
+    }
+    origDraw();
+  };
+  buildSetPane(); buildSearchPane(); buildExportPane();
+  requestAnimationFrame(loop);
+}
+init();
+
+</script>
+</body>
+</html>
