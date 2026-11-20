@@ -211,7 +211,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.6.2', build: 13 };
+const BUILD = { ver: 'R0.7.0', build: 14 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -1700,6 +1700,7 @@ function seek(t) {
   P.vt = t; dirty();
 }
 function frameIndex(t) { return S.frames.length ? Math.max(0, bsearchLE(S.frames, t + 1e-4, x => x)) : -1; }
+const frameT = t => S.frames.length ? S.frames[frameIndex(t)] : t; // start time of the frame shown at t
 function stepFrame(n) {
   P.pause();
   if (!S.frames.length) { seek(P.time() + n * 0.1); return; }
@@ -3236,6 +3237,7 @@ const frameDt = () => 1 / (S.fps || 30);
 /* ---------- sample lookup / interpolation ---------- */
 function objAt(o, t) {
   const S0 = o.samples; if (!S0.length) return null;
+  t = frameT(t); // compare frame with frame (the playhead can sit anywhere inside a frame)
   const i = bsearchLE(S0, t + 1e-6, s => s.t), half = frameDt() * 0.6, gapMax = frameDt() * (CFG.trackStep * 3 + 1);
   const a = S0[i], b = S0[i + 1];
   if (a && Math.abs(t - a.t) <= half) return a;
@@ -3357,13 +3359,27 @@ function grabRGB(t) {
   return new Promise(res => {
     const v = TRK.v; const done = () => {
       const W = TRK.W = Math.min(960, v.videoWidth || 960), H = TRK.H = Math.round(W * (v.videoHeight || 540) / (v.videoWidth || 960));
-      if (!TRK.cv) TRK.cv = document.createElement('canvas'); TRK.cv.width = W; TRK.cv.height = H;
+      if (!TRK.cv) TRK.cv = document.createElement('canvas'); if (TRK.cv.width !== W) { TRK.cv.width = W; TRK.cv.height = H; }
       const c = TRK.cv.getContext('2d', { willReadFrequently: true }); c.drawImage(v, 0, 0, W, H);
       const d = c.getImageData(0, 0, W, H).data, N = W * H, G = [new Float32Array(N), new Float32Array(N), new Float32Array(N)];
       for (let i = 0, j = 0; i < N; i++, j += 4) { G[0][i] = d[j]; G[1][i] = d[j + 1]; G[2][i] = d[j + 2]; }
       res(G);
     };
     if (Math.abs(v.currentTime - t) < 1e-4 && !v.seeking) return done();
+    // forward and close: play the hidden decoder and capture the frame as it is presented
+    // (sequential decoding; a seek re-decodes from the previous keyframe every time)
+    const ahead = t - v.currentTime, half = frameDt() * 0.5;
+    if ('requestVideoFrameCallback' in v && ahead > 0 && ahead < 1.5 && !v.seeking && !TRK.noPlay) {
+      let fired = false;
+      const guard = setTimeout(() => { if (fired) return; fired = true; v.pause(); v.addEventListener('seeked', done, { once: true }); v.currentTime = t; }, 1500);
+      const cb = (now, md) => {
+        if (fired) return;
+        if (md.mediaTime >= t - half) { fired = true; clearTimeout(guard); v.pause(); if (md.mediaTime > t + half) { TRK.late = (TRK.late || 0) + 1; v.addEventListener('seeked', done, { once: true }); v.currentTime = t; } else { TRK.ok = (TRK.ok || 0) + 1; done(); } }
+        else v.requestVideoFrameCallback(cb);
+      };
+      v.playbackRate = CFG.trkRate || 2; v.requestVideoFrameCallback(cb); v.play().catch(() => { if (!fired) { fired = true; clearTimeout(guard); TRK.noPlay = true; v.addEventListener('seeked', done, { once: true }); v.currentTime = t; } });
+      return;
+    }
     v.addEventListener('seeked', done, { once: true }); v.currentTime = t;
   });
 }
@@ -3481,7 +3497,40 @@ async function trkStart(o, seed, dir) {
   let flat = false; if (tsd < 12) { flat = true; M = Int32Array.from(Array(PT).keys()); [tm, tsd] = stats(T, M, PT); } // featureless inside: match on edges/context, never adapt
   const T0 = T.slice(), [t0m, t0sd] = stats(T0, M, PT);
   const kf = seed.src === 'analyst' ? seed.t : seed.kf;
-  return { flat, kf, o, dir, seed, stopAt, f, TW, TH, ux, uy, M, PT, T, tm, tsd, T0, t0m, t0sd, base, st: { c: c0, k: 1, th: 0 }, L: lumPyr(G), ov: [0, 0], vel: { gN: 0, gE: 0, u: 0, v: 0 }, lowRun: 0, coast: 0, suspect: [], lastGood: seed, prev: seed, fi: frameIndex(seed.t), n: 0, done: false, why: '', innov: [] };
+  const GP = grayPyr(G), spx = seed.poly.map(uvToPx), sc = polyC(spx), shr = spx.map(p => [sc[0] + (p[0] - sc[0]) * 0.92, sc[1] + (p[1] - sc[1]) * 0.92]);
+  const pts0 = goodFeatures(GP[0], bboxPx(seed.poly), (x, y) => pointInPoly(x, y, shr), CFG.flowN, Math.max(3, Math.min(bw, bh) / 12));
+  // ground-locked shape: the analyst outline as a fixed ground shape (ENU offsets about its centre)
+  let gShape = null;
+  if (S.track && CFG.groundLock) {
+    const P0 = makeProjector(S.track.at(seed.t)), gc = P0 && P0.toGround(...pxToUv(c0)), gp = P0 && seed.poly.map(p => P0.toGround(p[0], p[1]));
+    if (gc && !gc.horizon && gp.every(q => q && !q.horizon)) { const m = mpdLat(gc.lat), mo = mpdLon(gc.lat); gShape = gp.map(q => [(q.lon - gc.lon) * mo, (q.lat - gc.lat) * m, q.h]); }
+  }
+  // texture inside the outline (shrunk, so the edge contrast doesn't count): point flow needs it
+  let sx = 0, sxx = 0, nn = 0; { const sh2 = spx.map(p => [sc[0] + (p[0] - sc[0]) * 0.75, sc[1] + (p[1] - sc[1]) * 0.75]), b2 = bboxPx(seed.poly), L0 = GP[0];
+    for (let y = Math.max(0, b2[1] | 0); y < Math.min(L0.h, b2[1] + b2[3]); y++) for (let x = Math.max(0, b2[0] | 0); x < Math.min(L0.w, b2[0] + b2[2]); x++) if (pointInPoly(x, y, sh2)) { const v = L0.d[y * L0.w + x]; sx += v; sxx += v * v; nn++; } }
+  const tex = nn > 20 ? Math.sqrt(Math.max(0, sxx / nn - (sx / nn) ** 2)) : 0;
+  if (window.FLDBG) FLDBG.push(['pts0', pts0.length, +tex.toFixed(1)]);
+  return { noFlow: pts0.length < 12 || tex < 8, tex, gShape, gHist: [], psiRef: null, GP, pts: pts0, flat, kf, o, dir, seed, stopAt, f, TW, TH, ux, uy, M, PT, T, tm, tsd, T0, t0m, t0sd, base, st: { c: c0, k: 1, th: 0 }, L: lumPyr(G), ov: [0, 0], vel: { gN: 0, gE: 0, u: 0, v: 0 }, lowRun: 0, coast: 0, suspect: [], lastGood: seed, prev: seed, fi: frameIndex(seed.t), n: 0, done: false, why: '', innov: [] };
+}
+/* rebuild the appearance model (template, mask, base outline, points) from a frame, e.g. after a zoom step */
+function clipPolyFrame(P, W, H, m = 2) { // Sutherland–Hodgman against the frame rectangle (px)
+  const edges = [[p => p[0] >= m, (a, b) => { const f = (m - a[0]) / (b[0] - a[0]); return [m, a[1] + f * (b[1] - a[1])]; }], [p => p[0] <= W - m, (a, b) => { const f = (W - m - a[0]) / (b[0] - a[0]); return [W - m, a[1] + f * (b[1] - a[1])]; }],
+    [p => p[1] >= m, (a, b) => { const f = (m - a[1]) / (b[1] - a[1]); return [a[0] + f * (b[0] - a[0]), m]; }], [p => p[1] <= H - m, (a, b) => { const f = (H - m - a[1]) / (b[1] - a[1]); return [a[0] + f * (b[0] - a[0]), H - m]; }]];
+  let out = P;
+  for (const [inside, cut] of edges) { const inp = out; out = []; for (let i = 0; i < inp.length; i++) { const a = inp[(i + inp.length - 1) % inp.length], b = inp[i]; if (inside(b)) { if (!inside(a)) out.push(cut(a, b)); out.push(b); } else if (inside(a)) out.push(cut(a, b)); } if (!out.length) break; }
+  return out;
+}
+function trkReseed(K, G, GP, polyUv) {
+  const pp = clipPolyFrame(polyUv.map(uvToPx), TRK.W, TRK.H, 4); if (pp.length < 3) return false;
+  const xs = pp.map(p => p[0]), ys = pp.map(p => p[1]), bx = Math.min(...xs), by = Math.min(...ys), bw = Math.max(...xs) - bx, bh = Math.max(...ys) - by, c0 = [bx + bw / 2, by + bh / 2];
+  const pad = 0.04, tw = bw * (1 + 2 * pad), th = bh * (1 + 2 * pad), f = Math.max(1, Math.max(tw, th) / 48), TW = Math.max(10, Math.round(tw / f)), TH = Math.max(10, Math.round(th / f)), ux = tw / TW, uy = th / TH;
+  const base = pp.map(p => [p[0] - c0[0], p[1] - c0[1]]), PT = TW * TH, T = sampleRot(G, TRK.W, TRK.H, c0[0], c0[1], ux, uy, 0, TW, TH);
+  const mpoly = base.map(([x, y]) => [x / ux + TW / 2, y / uy + TH / 2]); let M = []; for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) if (pointInPoly(i + 0.5, j + 0.5, mpoly)) M.push(j * TW + i);
+  if (M.length < 16) M = [...Array(PT).keys()]; M = Int32Array.from(M);
+  let [tm, tsd] = stats(T, M, PT); if (tsd < 12) { M = Int32Array.from(Array(PT).keys()); [tm, tsd] = stats(T, M, PT); }
+  const shr = pp.map(p => [c0[0] + (p[0] - c0[0]) * 0.92, c0[1] + (p[1] - c0[1]) * 0.92]);
+  Object.assign(K, { TW, TH, ux, uy, M, PT, T, tm, tsd, T0: T.slice(), t0m: tm, t0sd: tsd, base, st: { c: c0, k: 1, th: 0 }, GP, pts: goodFeatures(GP[0], [bx, by, bw, bh], (x, y) => pointInPoly(x, y, shr), CFG.flowN, Math.max(3, Math.min(bw, bh) / 12)), gShape: null, scRef: null, a0Ref: null });
+  return pp.map(pxToUv);
 }
 function trkSearch(K, G, hyp, R, scales, rots, Tt, tm, tsd) {
   let best = { sc: -2 };
@@ -3511,7 +3560,8 @@ async function trkStep(K) {
   // ---- motion hypotheses ----
   const H = [];
   const box = bboxPx(prev.poly), excl = [box[0] - box[2] * 0.5, box[1] - box[3] * 0.5, box[2] * 2, box[3] * 2];
-  const gm = globalMotion(K.L, L, excl); K.L = L;
+  let gm = globalMotion(K.L, L, excl); K.L = L;
+  const GP = grayPyr(G), gmF = bgFlowMotion(K.GP, GP, gm.weak ? null : gm, excl); if (gmF) gm = gmF;
   if (!gm.weak) { const c = gmApply(gm, st.c); H.push({ weak: gm.weak, name: 'image registration', c: [c[0] + K.ov[0] * dt, c[1] + K.ov[1] * dt], k: st.k * Math.hypot(gm.a, gm.b), th: st.th + Math.atan2(gm.b, gm.a) }); }
   if (S.track && prev.g) { // camera model (KLV): re-project the ground outline
     const P0 = makeProjector(S.track.at(prev.t)), P1 = makeProjector(S.track.at(t));
@@ -3531,26 +3581,63 @@ async function trkStep(K) {
   const grow = 1 + Math.min(2, K.coast * 1.5);
   const R = Math.round(clamp((8 + Math.hypot(K.ov[0], K.ov[1]) * dt * 1.5) * grow, 6, 40) / (K.ux * st.k));
   let best = { sc: -2 };
-  for (const hyp of H) { if (!inF(hyp)) continue; const b = trkSearch(K, G, hyp, R, [1], [0], K.T, K.tm, K.tsd); if (b.sc > best.sc) best = b; }
-  { const b = trkSearch(K, G, { c: best.c, k: best.k, th: best.th }, 2, [0.95, 1, 1.05], [-0.1, 0, 0.1], K.T, K.tm, K.tsd); if (b.sc > best.sc) { b.hyp = best.hyp; best = b; } }
+  // 1) point flow on the object (move, turn, zoom from many points); verified against the template
+  const fl = K.noFlow ? null : objFlow(K, K.GP, GP, prev.poly, H[0], gmF ? gm : null); // point flow needs texture on the object
+  let flowOK = false;
+  if (fl) {
+    const fs = { name: 'point flow', ...fl.state }; H.unshift(fs);
+    const vb = trkSearch(K, G, fs, 0, [1], [0], K.T, K.tm, K.tsd); vb.hyp = fs;
+    const strong = fl.n >= 15 && fl.ratio >= 0.6, vis = visFrac(statePoly(K, fs));
+    if (vb.sc >= CFG.trackMinScore - 0.1 || (strong && (vb.sc >= 0.3 || vis < 0.7))) { best = vb; flowOK = true; if (vis < 0.7) best.sc = Math.max(best.sc, 0.6); }
+  }
+  // 1b) zoom step: background and object both lost at once, and the metadata has an FOV step nearby
+  // scene jump: the whole frame changes far more than usual (zoom step, cut)
+  let jd = 0; { const a = K.L0 || null, b = L.q; if (a && a.L.length === b.L.length) { let sum = 0; for (let i = 0; i < b.L.length; i += 3) sum += Math.abs(a.L[i] - b.L[i]); jd = sum / (b.L.length / 3); } K.L0 = b; }
+  const sceneJump = K.dref != null && jd > Math.max(10, 3 * K.dref);
+  if (!sceneJump && jd) K.dref = K.dref == null ? jd : lerp(K.dref, jd, 0.1);
+  if (!flowOK || sceneJump) { // (not gated on the point tracker: burned-in symbology and the crosshair 'match' when the scene jumps)
+    K.zoomDone = K.zoomDone || new Set();
+    const zs = fovStepNear(t, K.zoomDone);
+    if (zs) {
+      const cx = TRK.W / 2, cy = TRK.H / 2, z = K.dir > 0 ? zs.z : 1 / zs.z, zst = { c: [cx + z * (st.c[0] - cx), cy + z * (st.c[1] - cy)], k: st.k * z, th: st.th };
+      K.zoomDone.add(zs.key); K.zoomHold = (K.dir > 0 ? zs.tb : zs.ta) + 0.35 * K.dir; K.coast = 0; K.lowRun = 0;
+      // re-learn the object from the zoomed frame (visible part), so matching continues at the new scale
+      const rs = trkReseed(K, G, GP, statePoly(K, zst)); if (!rs) { K.st = zst; K.GP = GP; K.pts = null; }
+      const poly = rs || statePoly(K, zst), c = polyC(poly), smp = { t, poly, c, g: groundOf(t, c), conf: 0.5, src: 'tracker', zoom: +z.toFixed(3), kf: K.kf };
+      addSample(o, smp); K.prev = smp; K.n++; K.lastGood = smp; K.suspect = []; K.ov = [0, 0]; K.vel.u = K.vel.v = 0;
+      return smp;
+    }
+  }
+  // occlusion signalled by the point tracker: roll the template back to before it started (it may have learned the occluder)
+  if (K.occl && !K.occlDone && K.Thist && K.Thist.length) { const T0s = K.Thist[0]; K.T.set(T0s.T); [K.tm, K.tsd] = stats(K.T, K.M, K.PT); K.occlDone = true; }
+  if (!K.occl) K.occlDone = false;
+  // 2) otherwise template search about the motion predictions
+  if (!flowOK) {
+    for (const hyp of H) { if (!inF(hyp)) continue; const b = trkSearch(K, G, hyp, R, [1], [0], K.T, K.tm, K.tsd); if (b.sc > best.sc) best = b; }
+    { const b = trkSearch(K, G, { c: best.c, k: best.k, th: best.th }, 2, [0.95, 1, 1.05], [-0.1, 0, 0.1], K.T, K.tm, K.tsd); if (b.sc > best.sc) { b.hyp = best.hyp; best = b; } }
+  }
+  K.GP = GP; K.pts = flowOK ? fl.pts : null;
   // drift correction against the seed template (skipped once the object no longer looks like it: turned, zoomed)
   let agree = false, a0 = { sc: -2 };
   { const b0 = trkSearch(K, G, { c: best.c, k: best.k, th: best.th }, 2, [1], [0], K.T0, K.t0m, K.t0sd); a0 = b0;
     agree = b0.sc > 0.3 && Math.hypot(b0.c[0] - best.c[0], b0.c[1] - best.c[1]) <= K.ux * best.k * 1.5; // seed outline lands in the same place
-    if (b0.sc >= CFG.trackMinScore && b0.sc > best.sc - 0.15) { best.c = b0.c; best.sc = Math.max(b0.sc, Math.min(best.sc, b0.sc + 0.1)); } }
+    if (!flowOK && b0.sc >= CFG.trackMinScore && b0.sc > best.sc - 0.15) { best.c = b0.c; best.sc = Math.max(b0.sc, Math.min(best.sc, b0.sc + 0.1)); } }
   // innovation: distance from the winning prediction (px at 960 wide); tolerance grows while coasting
   const innov = Math.min(...H.map(h => Math.hypot(best.c[0] - h.c[0], best.c[1] - h.c[1]))) * 960 / TRK.W; // distance to the nearest motion prediction
-  const tol = CFG.trackGate * CFG.trackStep * (1 + K.coast * 2);
-  const gate = K.n >= 2 && innov > tol;
+  const ob = bboxPx(prev.poly), diag = Math.hypot(Math.min(ob[2], TRK.W), Math.min(ob[3], TRK.H)) * 960 / TRK.W; // jump limit scales with the object's size in the frame (zoom)
+  const tol = Math.max(CFG.trackGate * CFG.trackStep, 0.12 * diag) * (1 + K.coast * 2);
+  const gate = !flowOK && K.n >= 2 && innov > tol;
   // re-acquiring after coasting needs a match about as good as the object's recent ones
-  const need = K.coast ? Math.max(CFG.trackMinScore + 0.1, (K.scRef ?? 0.8) - 0.15) : CFG.trackMinScore;
-  const ok = best.sc >= need && !gate && (!K.coast || a0.sc >= CFG.trackMinScore - 0.05); // re-found object must still resemble the analyst outline
-  if (window.TRKDBG) TRKDBG.push([+t.toFixed(2), +best.sc.toFixed(2), +a0.sc.toFixed(2), +innov.toFixed(1), +tol.toFixed(1), +K.coast.toFixed(2), +need.toFixed(2), best.hyp.name[0], gm.n, ok ? 1 : 0]);
+  const need = K.coast ? Math.max(CFG.trackMinScore + 0.05, (K.scRef ?? 0.75) - 0.15) : CFG.trackMinScore;
+  const a0floor = Math.max(0.2, (K.a0Ref ?? 0.8) - 0.35); // a fallback match must still look like the analyst's outline
+  const ok = flowOK || (best.sc >= need && !gate && a0.sc >= a0floor && (!K.coast || a0.sc >= CFG.trackMinScore - 0.05)); // re-found object must still resemble the analyst outline
+  if (window.TRKDBG) TRKDBG.push([+t.toFixed(2), +best.sc.toFixed(2), +a0.sc.toFixed(2), K.a0Ref != null ? +K.a0Ref.toFixed(2) : null, flowOK ? 'F' : '-', +innov.toFixed(1), +tol.toFixed(1), +K.coast.toFixed(2), +need.toFixed(2), best.hyp.name[0], gm.n, ok ? 1 : 0]);
   if (!ok) {
     K.lowRun++; K.coast += dt; K.confirm = 0;
     if (K.coast > CFG.coastMax) { return end(gate ? 'lost (jump ' + innov.toFixed(0) + ' px)' : 'lost (match ' + best.sc.toFixed(2) + ')'); }
     // coast on the best prediction (registration first: it carries the camera motion)
-    const hp = H.find(h => h.name === 'image registration') || H.find(h => h.name === 'camera model') || H[H.length - 1], ns = { c: hp.c, k: hp.k, th: hp.th };
+    const inHold = K.zoomHold && (K.dir > 0 ? t < K.zoomHold : t > K.zoomHold);
+    const hp = (gmF && H.find(h => h.name === 'image registration')) || (!inHold && H.find(h => h.name === 'camera model')) || H.find(h => h.name === 'object motion') || H[H.length - 1], ns = { c: hp.c, k: hp.k, th: hp.th };
     if (!inF(hp)) return end('left the frame');
     const poly = statePoly(K, ns), c = polyC(poly), smp = { t, poly, c, g: groundOf(t, c), conf: 0, src: 'tracker', coast: 1, kf: K.kf };
     addSample(o, smp); K.suspect.push(smp); K.prev = smp; K.st = ns; K.n++;
@@ -3558,13 +3645,31 @@ async function trkStep(K) {
   }
   // accepted
   const ns = { c: best.c, k: best.k, th: best.th };
-  const poly = statePoly(K, ns), c = polyC(poly), g = groundOf(t, c), a = 0.5;
+  // keep the outline on the object: pull gently toward the centroid of points that move with it (not with the road)
+  if (flowOK && fl.movUsed && fl.n >= 10 && visFrac(statePoly(K, ns)) > 0.9) ns.c = [lerp(ns.c[0], fl.cent[0], 0.12), lerp(ns.c[1], fl.cent[1], 0.12)];
+  let poly = statePoly(K, ns);
+  // ground-locked shape: size from the camera geometry, orientation turned with the direction of travel
+  if (K.gShape && !(K.zoomHold && (K.dir > 0 ? t < K.zoomHold : t > K.zoomHold))) {
+    const lp = groundLocked(K, t, ns.c);
+    if (lp) {
+      // validate: the scale/turn the camera geometry predicts must agree with what the points measure
+      if (flowOK && K.glPrev) {
+        const dkG = Math.log(lp.k / K.glPrev.k), dthG = Math.atan2(Math.sin(lp.th - K.glPrev.th), Math.cos(lp.th - K.glPrev.th)), dkF = Math.log(fl.s), dthF = fl.th;
+        const e = Math.abs(dkG - dkF) + Math.abs(dthG - dthF); K.glErr = K.glErr == null ? e : lerp(K.glErr, e, 0.15); K.glN = (K.glN || 0) + 1;
+      }
+      K.glPrev = { k: lp.k, th: lp.th };
+      if (K.glN >= 10 && K.glErr > 0.012) { K.gShape = null; K.glOff = true; } // geometry disagrees with the image: shape from the image only
+      else if (K.glN >= 10) { poly = lp.poly; ns.k = lp.k; ns.th = lp.th; }
+    }
+  }
+  const c = polyC(poly), g = groundOf(t, c), a = 0.5;
   if (dt && !K.coast) {
     const pc = gmApply(gm, st.c), span = K.coast ? K.coast + dt : dt; // object's own image motion, camera motion removed
     if (!K.coast && !gm.weak) { K.ov = [lerp(K.ov[0], (ns.c[0] - pc[0]) / dt, a), lerp(K.ov[1], (ns.c[1] - pc[1]) / dt, a)]; }
     K.vel.u = lerp(K.vel.u, (ns.c[0] - st.c[0]) / dt, a); K.vel.v = lerp(K.vel.v, (ns.c[1] - st.c[1]) / dt, a);
     if (g && prev.g) { const mLat = mpdLat(g.lat), mLon = mpdLon(g.lat); K.vel.gN = lerp(K.vel.gN, (g.lat - prev.g.lat) * mLat / span, a); K.vel.gE = lerp(K.vel.gE, (g.lon - prev.g.lon) * mLon / span, a); }
   }
+  if (K.n % 6 === 0 && !K.occl) { (K.Thist = K.Thist || []).push({ t, T: K.T.slice() }); if (K.Thist.length > 4) K.Thist.shift(); }
   const smp = { t, poly, c, g, conf: +best.sc.toFixed(3), src: 'tracker', kf: K.kf };
   addSample(o, smp); K.prev = smp; K.st = ns; K.n++; K.lowRun = 0;
   if (K.coast) { // re-acquired: confirm on two consecutive steps before keeping the coasted stretch
@@ -3574,13 +3679,52 @@ async function trkStep(K) {
   }
   K.coast = 0; K.suspect = []; K.lastGood = smp; K.scRef = K.scRef == null ? best.sc : lerp(K.scRef, best.sc, 0.2);
   // template update on confident matches: slow blend; faster when the seed template no longer matches (turning)
-  if (!K.flat && best.sc > 0.75 && agree) {
+  if (a0.sc > -1 && !K.coast) K.a0Ref = K.a0Ref == null ? a0.sc : lerp(K.a0Ref, a0.sc, 0.03);
+  const a0ok = a0.sc >= Math.max(0.2, (K.a0Ref ?? 0.8) - 0.25); // relative to the object's own typical resemblance: gradual change of look is fine, a sudden drop is not
+  if (!K.flat && ((best.sc > 0.75 && agree) || (flowOK && best.sc > 0.55))) {
     const NT = new Float32Array(3 * K.PT), pa = best.aw * best.ah;
     for (let ch = 0; ch < 3; ch++) for (let j = 0; j < K.TH; j++) for (let i = 0; i < K.TW; i++) NT[ch * K.PT + j * K.TW + i] = best.A[ch * pa + (best.oy + j) * best.aw + best.ox + i];
-    const w = a0.sc >= CFG.trackMinScore ? 0.15 : 0.25; // adapt faster once the seed look has changed (turning, zoom) for (let k = 0; k < K.T.length; k++) K.T[k] = K.T[k] * (1 - w) + NT[k] * w; [K.tm, K.tsd] = stats(K.T, K.M, K.PT);
+    // adapt faster once the seed look has changed (turning, zoom)
+    const w = flowOK ? 0.2 : a0.sc >= CFG.trackMinScore ? 0.15 : 0.25; for (let k = 0; k < K.T.length; k++) K.T[k] = K.T[k] * (1 - w) + NT[k] * w; [K.tm, K.tsd] = stats(K.T, K.M, K.PT);
   }
   return smp;
 }
+Object.assign(CFG, { groundLock: true });
+function visFrac(poly) { const b = bboxPx(poly), x0 = Math.max(0, b[0]), y0 = Math.max(0, b[1]), x1 = Math.min(TRK.W, b[0] + b[2]), y1 = Math.min(TRK.H, b[1] + b[3]); return b[2] * b[3] > 0 ? Math.max(0, x1 - x0) * Math.max(0, y1 - y0) / (b[2] * b[3]) : 0; }
+/* a field-of-view step in the metadata near t (encoders often report zoom steps a little late) */
+function fovStepNear(t, done) {
+  const R = S.track ? S.track.recs : []; let best = null;
+  for (let i = 1; i < R.length; i++) {
+    const a = R[i - 1], b = R[i]; if (b.t < t - 0.3 || a.t > t + 0.8) continue;
+    const ha = a.f.hfov, hb = b.f.hfov; if (!isNum(ha) || !isNum(hb) || ha <= 0 || hb <= 0) continue;
+    const r = Math.log(ha / hb); if (Math.abs(r) < 0.15 || done.has(+b.t.toFixed(3))) continue;
+    if (!best || Math.abs(r) > Math.abs(best.r)) best = { r, z: ha / hb, ta: a.t, tb: b.t, key: +b.t.toFixed(3) };
+  }
+  return best;
+}
+function groundLocked(K, t, cpx) {
+  const Pj = makeProjector(S.track.at(t)); if (!Pj) return null;
+  const g = Pj.toGround(...pxToUv(cpx)); if (!g || g.horizon) return null;
+  // direction of travel over ground (from the last ~1 s of accepted positions), relative to when it was first established
+  const H = K.gHist; H.push([t, g.lat, g.lon]); while (H.length > 2 && Math.abs(H[H.length - 1][0] - H[0][0]) > 0.8) H.shift();
+  let dpsi = K.dpsi || 0;
+  if (H.length > 3 && Math.abs(H[H.length - 1][0] - H[0][0]) > 0.45) {
+    const a = H[0], b = H[H.length - 1], m = mpdLat(b[1]), mo = mpdLon(b[1]), n = (b[1] - a[1]) * m, e = (b[2] - a[2]) * mo, d = Math.hypot(n, e), v = d / Math.abs(b[0] - a[0]);
+    if (v > 2 && d > 2) { let psi = Math.atan2(e, n) * K.dir; if (K.dir < 0) psi = Math.atan2(-e, -n); // heading of travel
+      if (K.psiRef === null) K.psiRef = psi;
+      const want = Math.atan2(Math.sin(psi - K.psiRef), Math.cos(psi - K.psiRef)); dpsi = angMixC(dpsi, want, 0.5); }
+  }
+  K.dpsi = dpsi;
+  const co = Math.cos(-dpsi), si = Math.sin(-dpsi), m = mpdLat(g.lat), mo = mpdLon(g.lat), st = S.track.at(t);
+  const px = K.gShape.map(([e, n, h]) => { const E = e * co - n * si, N = e * si + n * co, la = g.lat + N / m, lo = g.lon + E / mo; return Pj.toImage(la, lo, isNum(g.h) ? g.h : groundElev(la, lo, st)); });
+  if (!px.every(Boolean)) return null;
+  const pp = px.map(uvToPx), base = K.base.map(([x, y]) => [x + cpx[0], y + cpx[1]]), sf = simFit(base, pp), pc = polyC(pp);
+  // keep the tracked centre: shift the projected outline so its centre sits on the tracked point
+  const poly = pp.map(p => pxToUv([p[0] - pc[0] + cpx[0], p[1] - pc[1] + cpx[1]]));
+  if (!(sf.dk > 0.2 && sf.dk < 5)) return null;
+  return { poly, k: sf.dk, th: sf.dth };
+}
+const angMixC = (a, b, f) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * f;
 function trkFinish(K, live) {
   const o = K.o, last = K.prev;
   if (/^lost|left the frame/.test(K.why) && last) last.end = K.why; // stops tracking-through-playback retrying here; a Redraw clears it
@@ -3806,6 +3950,139 @@ function buildObjPane(keep) {
 }
 
 /* =====================================================================
+   POINT-FLOW TRACKING (median-flow style, as used by TLD / modern trackers)
+   - Gray pyramids at tracker resolution
+   - Shi–Tomasi corners inside the object outline (and across the background)
+   - Pyramidal Lucas–Kanade with a predicted starting displacement, forward–backward checked
+   - RANSAC similarity (shift, scale, rotation) from the surviving points
+   Background points give the camera's own motion and reject burned-in symbology (it doesn't
+   move with the scene); object points give the object's move, turn and zoom.
+   ===================================================================== */
+Object.assign(CFG, { flowN: 90, flowWin: 7, flowFB: 1.0 });
+function grayPyr(G) {
+  const W = TRK.W, H = TRK.H, L0 = new Float32Array(W * H);
+  for (let i = 0; i < L0.length; i++) L0[i] = 0.299 * G[0][i] + 0.587 * G[1][i] + 0.114 * G[2][i];
+  const P = [{ d: L0, w: W, h: H }];
+  while (P.length < 4 && P[P.length - 1].w > 120) {
+    const s = P[P.length - 1], w = s.w >> 1, h = s.h >> 1, d = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const k = 2 * y * s.w + 2 * x; d[y * w + x] = (s.d[k] + s.d[k + 1] + s.d[k + s.w] + s.d[k + s.w + 1]) * 0.25; }
+    P.push({ d, w, h });
+  }
+  return P;
+}
+const bil = (L, x, y) => { if (x < 0 || y < 0 || x > L.w - 1.001 || y > L.h - 1.001) return NaN; const xi = x | 0, yi = y | 0, fx = x - xi, fy = y - yi, k = yi * L.w + xi, d = L.d; return (d[k] * (1 - fx) + d[k + 1] * fx) * (1 - fy) + (d[k + L.w] * (1 - fx) + d[k + L.w + 1] * fx) * fy; };
+/* Shi–Tomasi corners; inside(x,y) restricts the region; step samples the candidate grid */
+function goodFeatures(L, box, inside, maxN, minDist, step = 1, avoid = []) {
+  const [bx, by, bw, bh] = box, x0 = Math.max(3, bx | 0), y0 = Math.max(3, by | 0), x1 = Math.min(L.w - 4, (bx + bw) | 0), y1 = Math.min(L.h - 4, (by + bh) | 0), d = L.d, w = L.w;
+  const C = []; let mx = 0;
+  for (let y = y0; y <= y1; y += step) for (let x = x0; x <= x1; x += step) {
+    if (!inside(x, y)) continue;
+    let a = 0, b = 0, c = 0;
+    for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) { const k = (y + j) * w + x + i, gx = (d[k + 1] - d[k - 1]) * 0.5, gy = (d[k + w] - d[k - w]) * 0.5; a += gx * gx; b += gx * gy; c += gy * gy; }
+    const l = (a + c) / 2 - Math.sqrt(((a - c) / 2) ** 2 + b * b); if (l > mx) mx = l; C.push([l, x, y]);
+  }
+  C.sort((p, q) => q[0] - p[0]);
+  const out = [...avoid.map(p => [p[0], p[1], true])], md2 = minDist * minDist;
+  for (const [l, x, y] of C) {
+    if (l < mx * 0.02 || out.length - avoid.length >= maxN) break;
+    if (out.every(p => (p[0] - x) ** 2 + (p[1] - y) ** 2 >= md2)) out.push([x, y]);
+  }
+  return out.filter(p => !p[2]).map(p => [p[0], p[1]]);
+}
+/* pyramidal LK for one point; g = predicted displacement at level 0 */
+function lkPoint(A, B, x, y, gx, gy) {
+  const W = CFG.flowWin, top = A.length - 1; let dx = gx / (1 << top), dy = gy / (1 << top), res = 0;
+  for (let l = top; l >= 0; l--) {
+    const La = A[l], Lb = B[l], s = 1 / (1 << l), px = x * s, py = y * s, n = (2 * W + 1) ** 2;
+    const I0 = new Float32Array(n), Ix = new Float32Array(n), Iy = new Float32Array(n);
+    let gxx = 0, gxy = 0, gyy = 0, q = 0;
+    for (let j = -W; j <= W; j++) for (let i = -W; i <= W; i++, q++) {
+      const v = bil(La, px + i, py + j), vx = (bil(La, px + i + 1, py + j) - bil(La, px + i - 1, py + j)) * 0.5, vy = (bil(La, px + i, py + j + 1) - bil(La, px + i, py + j - 1)) * 0.5;
+      if (!(v === v && vx === vx && vy === vy)) return null;
+      I0[q] = v; Ix[q] = vx; Iy[q] = vy; gxx += vx * vx; gxy += vx * vy; gyy += vy * vy;
+    }
+    const det = gxx * gyy - gxy * gxy; if (det < 1e-3 * n * n) return null;
+    for (let it = 0; it < 12; it++) {
+      let bx = 0, by = 0, e2 = 0; q = 0;
+      for (let j = -W; j <= W; j++) for (let i = -W; i <= W; i++, q++) { const v = bil(Lb, px + dx + i, py + dy + j); if (v !== v) return null; const e = I0[q] - v; bx += e * Ix[q]; by += e * Iy[q]; e2 += Math.abs(e); }
+      const vx = (gyy * bx - gxy * by) / det, vy = (gxx * by - gxy * bx) / det; dx += vx; dy += vy; res = e2 / n;
+      if (vx * vx + vy * vy < 1e-4) break;
+    }
+    if (l > 0) { dx *= 2; dy *= 2; }
+  }
+  return [x + dx, y + dy, res];
+}
+/* forward–backward tracked pairs */
+function flowPairs(A, B, pts, guess) {
+  const out = [];
+  for (let i = 0; i < pts.length; i++) {
+    const [x, y] = pts[i], g = guess ? guess(x, y) : [0, 0];
+    const f = lkPoint(A, B, x, y, g[0], g[1]); if (!f) continue;
+    const r = lkPoint(B, A, f[0], f[1], x - f[0], y - f[1]); if (!r) continue;
+    const fb = Math.hypot(r[0] - x, r[1] - y); if (fb > CFG.flowFB) continue;
+    out.push({ p: [x, y], q: [f[0], f[1]], fb, res: f[2] });
+  }
+  return out;
+}
+/* RANSAC similarity q = z·p + t (z complex: a + ib) */
+let _rs = 12345; const rnd = () => { _rs = (_rs * 1103515245 + 12345) & 0x7fffffff; return _rs / 0x7fffffff; }; // deterministic: same video, same track
+function ransacSim(P, thr = 1.5, iters = 80) {
+  if (P.length < 3) return null; _rs = 12345 + P.length;
+  const fitLS = Q => { let n = Q.length, sx = 0, sy = 0, sxp = 0, syp = 0; for (const e of Q) { sx += e.p[0]; sy += e.p[1]; sxp += e.q[0]; syp += e.q[1]; } const mx = sx / n, my = sy / n, mxp = sxp / n, myp = syp / n; let n1 = 0, n2 = 0, d = 0; for (const e of Q) { const X = e.p[0] - mx, Y = e.p[1] - my, Xp = e.q[0] - mxp, Yp = e.q[1] - myp; n1 += X * Xp + Y * Yp; n2 += X * Yp - Y * Xp; d += X * X + Y * Y; } if (d < 1e-9) return { a: 1, b: 0, tx: mxp - mx, ty: myp - my }; const a = n1 / d, b = n2 / d; return { a, b, tx: mxp - (a * mx - b * my), ty: myp - (b * mx + a * my) }; };
+  const err = (m, e) => Math.hypot(m.a * e.p[0] - m.b * e.p[1] + m.tx - e.q[0], m.b * e.p[0] + m.a * e.p[1] + m.ty - e.q[1]);
+  let best = null, bn = 0;
+  for (let it = 0; it < iters; it++) {
+    const i = (rnd() * P.length) | 0, j = (rnd() * P.length) | 0; if (i === j) continue;
+    const e = P[i], f = P[j], dpx = f.p[0] - e.p[0], dpy = f.p[1] - e.p[1], dqx = f.q[0] - e.q[0], dqy = f.q[1] - e.q[1], dd = dpx * dpx + dpy * dpy; if (dd < 16) continue;
+    const a = (dqx * dpx + dqy * dpy) / dd, b = (dqy * dpx - dqx * dpy) / dd, m = { a, b, tx: e.q[0] - (a * e.p[0] - b * e.p[1]), ty: e.q[1] - (b * e.p[0] + a * e.p[1]) };
+    let n = 0; for (const x of P) if (err(m, x) < thr) n++;
+    if (n > bn) { bn = n; best = m; }
+  }
+  if (!best) best = fitLS(P);
+  let inl = P.filter(x => err(best, x) < thr); if (inl.length >= 3) { best = fitLS(inl); inl = P.filter(x => err(best, x) < thr); }
+  return { ...best, inl, n: inl.length, ratio: inl.length / P.length };
+}
+/* camera motion from background points (robust to burned-in symbology); same form as globalMotion */
+function bgFlowMotion(A, B, guess, excl) {
+  const L = A[0], ex = excl, inside = (x, y) => !(ex && x > ex[0] && x < ex[0] + ex[2] && y > ex[1] && y < ex[1] + ex[3]);
+  const pts = goodFeatures(L, [L.w * 0.04, L.h * 0.04, L.w * 0.92, L.h * 0.92], inside, 90, Math.max(16, L.w / 36), 4);
+  if (pts.length < 20) return null;
+  const pr = flowPairs(A, B, pts, guess ? (x, y) => { const q = gmApply(guess, [x, y]); return [q[0] - x, q[1] - y]; } : null);
+  let m = ransacSim(pr, 1.2, 100); if (!m || m.n < 15) return null;
+  // burned-in symbology: a 'no motion' set while other points agree on a real motion -> take the real one
+  const ident = q => Math.abs(q.a - 1) < 0.002 && Math.abs(q.b) < 0.002 && Math.hypot(q.tx, q.ty) < 0.5;
+  if (ident(m)) { const rest = pr.filter(e => !m.inl.includes(e)), m2 = rest.length >= 15 ? ransacSim(rest, 1.2, 100) : null; if (m2 && m2.n >= 12 && m2.n >= 0.6 * m.n && !ident(m2)) m = { ...m2, ratio: m2.n / pr.length }; }
+  if (m.ratio < 0.2) return null;
+  const cx = TRK.W / 2, cy = TRK.H / 2; // convert q = z·p + t to the frame-centre form used by gmApply
+  return { a: m.a, b: m.b, tx: m.a * cx - m.b * cy + m.tx - cx, ty: m.b * cx + m.a * cy + m.ty - cy, n: m.n, weak: false, flow: true };
+}
+/* object points: track, drop those moving with the background (when the object moves relative to it), fit */
+function objFlow(K, A, B, prevPoly, pred, gm) {
+  const pp = prevPoly.map(uvToPx), bb = (() => { const xs = pp.map(p => p[0]), ys = pp.map(p => p[1]); return [Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)]; })();
+  const c = polyC(pp), shr = pp.map(p => [c[0] + (p[0] - c[0]) * 0.92, c[1] + (p[1] - c[1]) * 0.92]), inside = (x, y) => pointInPoly(x, y, shr);
+  let pts = (K.pts || []).filter(p => inside(p[0], p[1]));
+  if (pts.length < CFG.flowN * 0.6) pts = pts.concat(goodFeatures(A[0], bb, inside, CFG.flowN - pts.length, Math.max(3, Math.min(bb[2], bb[3]) / 12), 1, pts));
+  const why = r => { if (window.FLDBG) FLDBG.push([+(K.prev.t).toFixed(2), r, pts.length]); return null; };
+  if (pts.length < 6) return why('few pts');
+  const st = K.st, dk = pred.k / st.k, dth = pred.th - st.th, co = Math.cos(dth) * dk, si = Math.sin(dth) * dk;
+  const guess = (x, y) => { const X = x - st.c[0], Y = y - st.c[1]; return [pred.c[0] + co * X - si * Y - x, pred.c[1] + si * X + co * Y - y]; };
+  let pr = flowPairs(A, B, pts, guess); if (pr.length < 6) return why('fb ' + pr.length);
+  if (gm) { // remove points that move with the background, if the object itself moves relative to it
+    const rel = pr.map(e => { const b = gmApply(gm, e.p); return Math.hypot(e.q[0] - b[0], e.q[1] - b[1]); });
+    const mov = pr.filter((e, i) => rel[i] > 1.0);
+    if (mov.length >= 6 && mov.length >= pr.length * 0.25) { pr = mov; var movUsed = true; }
+    else if ((K.relRef || 0) > 2) { K.occl = true; return why('object points gone (now moving with background)'); } // occluded by static structure, or lost
+    if (movUsed) { const r = mov.map(e => { const b = gmApply(gm, e.p); return Math.hypot(e.q[0] - b[0], e.q[1] - b[1]); }).sort((a, b) => a - b); K.relRef = lerp(K.relRef || r[r.length >> 1], r[r.length >> 1], 0.2); }
+    else K.relRef = lerp(K.relRef || 0, 0, 0.2);
+  }
+  K.occl = false;
+  const m = ransacSim(pr, 1.5, 80); if (!m || m.n < 6 || m.ratio < 0.35) return why('ransac ' + (m ? m.n + '/' + pr.length : 'none'));
+  const s = Math.hypot(m.a, m.b), th = Math.atan2(m.b, m.a); if (Math.abs(Math.log(s)) > 0.12 || Math.abs(th) > 0.2) return why('sim s' + s.toFixed(3) + ' th' + th.toFixed(3));
+  const qs = m.inl.map(e => e.q), cent = [qs.reduce((a, q) => a + q[0], 0) / qs.length, qs.reduce((a, q) => a + q[1], 0) / qs.length];
+  return { movUsed: !!movUsed, cent, m, s, th, n: m.n, ratio: m.ratio, pts: qs, state: { c: [m.a * st.c[0] - m.b * st.c[1] + m.tx, m.b * st.c[0] + m.a * st.c[1] + m.ty], k: st.k * s, th: st.th + th } };
+}
+
+/* =====================================================================
    CALIBRATION (control lines) and MENSURATION
    The analyst measures a feature on the overhead map (flat, horizontal), then clicks the same
    two points, in the same order, on a paused video frame. The sensor model's ground points for
@@ -3933,12 +4210,12 @@ function calHint() {
 function calMapClick(lat, lon) {
   if (CAL.mode !== 'map1' && CAL.mode !== 'map2') return false;
   CAL.pend.map.push({ lat, lon }); CAL.mode = CAL.mode === 'map1' ? 'map2' : 'img1';
-  if (Math.abs(P.time() - CAL.pend.t) > frameDt()) seek(CAL.pend.t);
+  if (Math.abs(frameT(P.time()) - CAL.pend.t) > frameDt() * 0.3) seek(CAL.pend.t);
   calHint(); dirty(); return true;
 }
 function calImgClick(uv) {
   if (!CAL.mode || CAL.mode.startsWith('map')) return false;
-  if (Math.abs(P.time() - CAL.pend.t) > frameDt() * 0.6) { status('Calibration points must be on the frame at ' + tcOf(CAL.pend.t) + ' — returning there', 'badc'); P.pause(); seek(CAL.pend.t); return true; }
+  if (Math.abs(frameT(P.time()) - CAL.pend.t) > frameDt() * 0.3) { status('Calibration points must be on the frame at ' + tcOf(CAL.pend.t) + ' — returning there', 'badc'); P.pause(); seek(CAL.pend.t); return true; }
   CAL.pend.img.push(uv);
   if (CAL.mode === 'img1') { CAL.mode = 'img2'; calHint(); }
   else if (CAL.mode === 'meas1') { CAL.mode = 'meas2'; calHint(); }
@@ -3987,7 +4264,7 @@ function calDrawMap(g) {
   if (CAL.pend && CAL.pend.map.length) { CAL.pend.map.forEach(p => dot(p, '#fff')); if (CAL.pend.map.length === 2) ln(CAL.pend.map[0], CAL.pend.map[1], '#fff', 2, [4, 3]); }
 }
 function calDrawVideo(g, W, H) {
-  const t = P.time(), st = S.cur && S.cur.st, Pj = S.cur && S.cur.proj, toPx = uv => vzToPx(uv, W, H), here = x => Math.abs(x.t - t) < frameDt() * 0.6;
+  const t = P.time(), st = S.cur && S.cur.st, Pj = S.cur && S.cur.proj, toPx = uv => vzToPx(uv, W, H), here = x => Math.abs(x.t - frameT(t)) < frameDt() * 0.3;
   const seg = (a, b, col, w, dash) => { const [x0, y0] = toPx(a), [x1, y1] = toPx(b); g.strokeStyle = col; g.lineWidth = w; g.setLineDash(dash || []); g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke(); g.setLineDash([]); [[x0, y0], [x1, y1]].forEach(([x, y]) => { g.strokeRect(x - 3, y - 3, 6, 6); }); return [x1, y1]; };
   const lbl = ([x, y], txt, col) => { g.font = '11px ' + getComputedStyle(document.body).fontFamily; g.fillStyle = 'rgba(0,0,0,.65)'; g.fillRect(x + 6, y - 9, g.measureText(txt).width + 6, 13); g.fillStyle = col; g.fillText(txt, x + 9, y + 1); };
   for (const c of CAL.list) {
