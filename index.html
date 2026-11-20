@@ -198,7 +198,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.3.0', build: 4 };
+const BUILD = { ver: 'R0.3.1', build: 5 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -2704,7 +2704,7 @@ function drawPossibleCoverage(g, st) {
    sessions) or, where unavailable, a read-only folder pick indexed in memory
    with the catalogue exported as a STAC ItemCollection.
    ===================================================================== */
-const LIB = { dir: null, saved: null, name: '', mode: null, items: new Map(), files: new Map(), sel: null, thumbs: new Map(), busy: false, map: null, pending: null, F: { q: '', from: '', to: '', tier: '', minN: '', inView: false } };
+const LIB = { confirm: null, dir: null, saved: null, name: '', mode: null, items: new Map(), files: new Map(), sel: null, thumbs: new Map(), busy: false, map: null, pending: null, F: { q: '', from: '', to: '', tier: '', minN: '', inView: false } };
 const MEDIA_RE = /\.(ts|m2ts|mts|mpg|mpeg|trp|mp4|m4v|mov)$/i, SIDE_RE = /\.(srt|csv|klv|bin)$/i;
 const CLASS_RANK = { 'UNCLASSIFIED': 0, 'RESTRICTED': 1, 'CONFIDENTIAL': 2, 'SECRET': 3, 'TOP SECRET': 4 };
 
@@ -2723,6 +2723,7 @@ async function* walkDir(dir, prefix = '') {
 }
 async function fsDir(root, path, create) { let d = root; for (const p of path.split('/').filter(Boolean)) d = await d.getDirectoryHandle(p, { create }); return d; }
 async function fsWrite(root, path, data) { const parts = path.split('/'); const d = await fsDir(root, parts.slice(0, -1).join('/'), true); const fh = await d.getFileHandle(parts.pop(), { create: true }); const w = await fh.createWritable(); await w.write(data); await w.close(); }
+async function fsRemove(root, path) { const parts = path.split('/'); try { const d = await fsDir(root, parts.slice(0, -1).join('/'), false); await d.removeEntry(parts.pop()); return true; } catch (e) { if (e.name === 'NotFoundError') return true; throw e; } }
 async function fsRead(root, path) { const parts = path.split('/'); const d = await fsDir(root, parts.slice(0, -1).join('/'), false); return (await d.getFileHandle(parts.pop())).getFile(); }
 
 /* ---------- indexing ---------- */
@@ -2866,8 +2867,21 @@ async function libScan() {
       await new Promise(r => setTimeout(r));
     }
     for (const it of LIB.items.values()) if (!seen.has(it.id) && !it.properties['miv:missing']) { it.properties['miv:missing'] = true; await libSaveItem(it, true); }
+    // moved / renamed files: same content hash at a new path -> carry bookmarks over, retire the stale record
+    let moved = 0;
+    for (const old of [...LIB.items.values()].filter(i => i.properties['miv:missing'] && i.properties['miv:hash'])) {
+      const now = [...LIB.items.values()].find(i => !i.properties['miv:missing'] && i.properties['miv:hash'] === old.properties['miv:hash']);
+      if (!now) continue;
+      const ob = old.properties['miv:bookmarks'] || [], nb = now.properties['miv:bookmarks'] || [];
+      if (ob.length && !nb.length) now.properties['miv:bookmarks'] = ob;
+      now.properties.created = old.properties.created || now.properties.created;
+      now.properties['miv:previous_paths'] = [...(old.properties['miv:previous_paths'] || []), old.properties['miv:path']];
+      await libSaveItem(now, true);
+      if (LIB.mode === 'fs') { await fsRemove(LIB.dir, '.miviewer/items/' + old.id + '.json'); await fsRemove(LIB.dir, '.miviewer/thumbs/' + old.id + '.jpg'); }
+      LIB.items.delete(old.id); moved++;
+    }
     if (LIB.mode === 'fs') await fsWrite(LIB.dir, '.miviewer/catalog.json', JSON.stringify(collectionJSON(), null, 1));
-    libStatus(LIB.items.size + ' item(s) · ' + (LIB.mode === 'fs' ? 'catalogue written to ' + LIB.name + '/.miviewer/' : 'in-memory (export the catalogue to keep it)'));
+    libStatus((moved ? moved + ' moved/renamed file(s) matched, bookmarks kept · ' : '') + LIB.items.size + ' item(s) · ' + (LIB.mode === 'fs' ? 'catalogue written to ' + LIB.name + '/.miviewer/' : 'in-memory (export the catalogue to keep it)'));
   } catch (e) { console.error(e); libStatus('Library error: ' + e.message); }
   LIB.busy = false; renderLib(); if (!LIB.sel) libFitAll();
 }
@@ -2880,6 +2894,32 @@ async function libThumb(it) {
   if (LIB.thumbs.has(it.id)) return LIB.thumbs.get(it.id);
   if (LIB.mode !== 'fs' || !it.assets.thumbnail) return null;
   try { const u = URL.createObjectURL(await fsRead(LIB.dir, '.miviewer/thumbs/' + it.id + '.jpg')); LIB.thumbs.set(it.id, u); return u; } catch (e) { return null; }
+}
+/* remove catalogue records whose video has left the folder (record, thumbnail, bookmarks) */
+async function libRemove(ids) {
+  const done = [];
+  for (const id of ids) {
+    const it = LIB.items.get(id); if (!it || !it.properties['miv:missing']) continue;
+    try {
+      if (LIB.mode === 'fs') { await fsRemove(LIB.dir, '.miviewer/items/' + id + '.json'); await fsRemove(LIB.dir, '.miviewer/thumbs/' + id + '.jpg'); }
+      LIB.items.delete(id); if (LIB.thumbs.has(id)) { URL.revokeObjectURL(LIB.thumbs.get(id)); LIB.thumbs.delete(id); }
+      if (LIB.sel === id) LIB.sel = null; done.push(id);
+    } catch (e) { libStatus('Could not remove ' + id + ': ' + e.message); }
+  }
+  if (LIB.mode === 'fs' && done.length) await fsWrite(LIB.dir, '.miviewer/catalog.json', JSON.stringify(collectionJSON(), null, 1));
+  LIB.confirm = null;
+  libStatus(done.length ? 'Removed ' + done.length + ' catalogue record(s)' + (LIB.mode === 'fs' ? ' — catalogue updated' : '') : 'Nothing removed');
+  renderLib();
+}
+function removeWarning(items) {
+  const marks = items.reduce((n, i) => n + (i.properties['miv:bookmarks'] || []).length, 0);
+  return h('div', { class: 'note badc', style: 'border:1px solid var(--bad);padding:6px;margin-top:4px' },
+    'Remove ' + (items.length === 1 ? 'the catalogue record for “' + items[0].properties.title + '”' : items.length + ' catalogue records') + '? ',
+    'This deletes the record' + (LIB.mode === 'fs' ? ', its thumbnail in .miviewer/' : '') + (marks ? ' and ' + marks + ' bookmark(s) with their notes' : '') + '. ',
+    'The video file' + (items.length > 1 ? 's are' : ' is') + ' no longer in the library folder; this cannot be undone. If a file was only moved or renamed within the folder, press Rescan first — it is matched by content and keeps its bookmarks.',
+    h('div', { class: 'btns' },
+      h('button', { style: 'border-color:var(--bad);color:var(--bad)', onclick: e => { e.stopPropagation(); libRemove(items.map(i => i.id)); } }, 'Remove permanently'),
+      h('button', { onclick: e => { e.stopPropagation(); LIB.confirm = null; renderLib(); } }, 'Cancel')));
 }
 let libSaveTimer = null;
 function libMarksChanged() {
@@ -2921,6 +2961,12 @@ function renderLib() {
   $('#libClass').textContent = cls ? 'HIGHEST MARKING IN LIBRARY (metadata): ' + cls : ''; $('#libClass').style.display = cls ? '' : 'none';
   $('#libName').textContent = LIB.mode ? LIB.name + (LIB.mode === 'mem' ? ' (read-only, in memory)' : '') : 'no library connected';
   $('#libCount').textContent = list.length + ' of ' + LIB.items.size;
+  const missing = [...LIB.items.values()].filter(i => i.properties['miv:missing']);
+  const bulk = $('#libBulk'); bulk.innerHTML = '';
+  if (missing.length) {
+    bulk.append(h('div', { class: 'row' }, h('span', { class: 'badc' }, missing.length + ' record(s) point to files no longer in the folder'), h('button', { style: 'margin-left:auto;border-color:var(--bad)', onclick: () => { LIB.confirm = '*'; renderLib(); } }, 'Remove all missing…')));
+    if (LIB.confirm === '*') bulk.append(removeWarning(missing));
+  }
   for (const it of list) {
     const P2 = it.properties, img = h('img', { width: 96, height: 54, alt: '' });
     libThumb(it).then(u => { if (u) img.src = u; });
@@ -2931,7 +2977,10 @@ function renderLib() {
           h('div', { class: 'muted' }, (P2.start_datetime ? P2.start_datetime.replace('T', ' ').slice(0, 19) + 'Z' : (P2.datetime || '').slice(0, 10) + ' (file)') + ' · ' + fmtT(P2['miv:duration_s'] || 0) + (P2.platform ? ' · ' + P2.platform : '')),
           h('div', { class: 'dim' }, [isNum(P2['miv:niirs_max']) ? 'NIIRS ' + P2['miv:niirs_min'] + '–' + P2['miv:niirs_max'] : null, P2['miv:geometry_provenance'] ? 'geometry ' + P2['miv:geometry_provenance'] : null, (P2['miv:bookmarks'] || []).length ? (P2['miv:bookmarks'].length + ' bookmark(s)') : null, P2['miv:classification'] || null].filter(Boolean).join(' · ')),
           P2['miv:missing'] ? h('div', { class: 'badc' }, 'file missing from folder') : P2['miv:error'] ? h('div', { class: 'badc' }, P2['miv:error']) : null,
-          h('div', { class: 'btns' }, h('button', { onclick: e => { e.stopPropagation(); libOpenItem(it.id); }, disabled: !!P2['miv:missing'] }, 'Open'), h('span', { class: 'dim' }, P2['miv:path'])))));
+          h('div', { class: 'btns' }, h('button', { onclick: e => { e.stopPropagation(); libOpenItem(it.id); }, disabled: !!P2['miv:missing'] }, 'Open'),
+            P2['miv:missing'] ? h('button', { style: 'border-color:var(--bad)', onclick: e => { e.stopPropagation(); LIB.confirm = it.id; renderLib(); } }, 'Remove from catalogue…') : null,
+            h('span', { class: 'dim' }, P2['miv:path'])),
+          LIB.confirm === it.id ? removeWarning([it]) : null)));
     box.append(row);
   }
   if (LIB.map) LIB.map.render();
@@ -3003,6 +3052,7 @@ function buildLibUI() {
           h('label', null, 'NIIRS ≥'), inp('minN', 'number', ''),
           h('label', null, 'Only in map view'), h('input', { type: 'checkbox', onchange: e => { F.inView = e.target.checked; renderLib(); } })),
         h('div', { class: 'row', style: 'margin:6px 0' }, h('span', { class: 'muted', id: 'libCount' }), h('span', { class: 'dim', style: 'margin-left:auto' }, 'click = locate · double-click = open')),
+        h('div', { id: 'libBulk' }),
         h('div', { id: 'libList' }))));
   document.body.append(el);
   idbGet('libDir').then(d => { if (d) { LIB.saved = d; } });
