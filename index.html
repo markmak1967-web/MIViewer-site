@@ -172,7 +172,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.1.0', build: 1 };
+const BUILD = { ver: 'R0.2.0', build: 2 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -1176,6 +1176,7 @@ function avc1Entry(sps, pps, w, hh) {
   const avcC = box('avcC', u8a([1, sps[1], sps[2], sps[3], 0xFF, 0xE1]), U16(sps.length), sps, u8a([1]), U16(pps.length), pps);
   return box('avc1', Z(6), U16(1), Z(16), U16(w), U16(hh), U32(0x00480000), U32(0x00480000), U32(0), U16(1), Z(32), U16(0x18), U16(0xFFFF), avcC);
 }
+function mettEntry(mime) { return box('mett', Z(6), U16(1), u8a([0]), enc.encode(mime), u8a([0])); }
 function urimEntry() { return box('urim', Z(6), U16(1), fbox('uri ', 0, 0, enc.encode(UAS_URN), u8a([0]))); }
 function rle(vals) { const out = []; for (const v of vals) { if (out.length && out[out.length - 1][1] === v) out[out.length - 1][0]++; else out.push([1, v]); } return out; }
 
@@ -1208,7 +1209,7 @@ function elst(entries) { return box('edts', fbox('elst', 0, 0, U32(entries.lengt
 
 /* v: {timescale, entry, width, height, samples:[{dts,pts,data|src}]} — decode order; first must be key
    klv: [{t (s from presentation start), raw}] */
-function writeMP4(v, klv, title) {
+function writeMP4(v, klv, title, metaEntry, metaHandlerName) {
   const MTS = 1000, ts = v.timescale, S0 = v.samples;
   const dts0 = S0[0].dts, N = S0.length;
   const durs = S0.map((s, i) => i + 1 < N ? S0[i + 1].dts - s.dts : null);
@@ -1237,8 +1238,8 @@ function writeMP4(v, klv, title) {
       kEd.push([Math.round((kTicks[K.length - 1] + kDurs[K.length - 1] - kTicks[0]) / KTS * MTS), 0]);
       const kd = kDurs.slice(); // media timeline starts at first sample
       traks.push(box('trak', tkhd(2, Math.round(presDurS * MTS), 0, 0, false), box('tref', box('cdsc', U32(1))), elst(kEd),
-        box('mdia', mdhd(KTS, kd.reduce((a, b) => a + b, 0)), hdlr('meta', 'MISB ST 0601 KLV'),
-          box('minf', fbox('nmhd', 0, 0), dinf(), stblBoxes(urimEntry(), kd, null, null, ksizes, koffs)))));
+        box('mdia', mdhd(KTS, kd.reduce((a, b) => a + b, 0)), hdlr('meta', metaHandlerName || 'MISB ST 0601 KLV'),
+          box('minf', fbox('nmhd', 0, 0), dinf(), stblBoxes(metaEntry || urimEntry(), kd, null, null, ksizes, koffs)))));
     }
     return box('moov', fbox('mvhd', 0, 0, U32(0), U32(0), U32(MTS), U32(Math.round(presDurS * MTS)), U32(0x00010000), U16(0x0100), Z(10), MATRIX, Z(24), U32(traks.length + 1)), ...traks);
   };
@@ -1394,7 +1395,7 @@ const warn = m => { S.warnings.push(m); console.warn(m); };
 function resetState() {
   if (S.vidUrl) URL.revokeObjectURL(S.vidUrl);
   vid.removeAttribute('src'); vid.load();
-  Object.assign(S, { name: '', size: 0, kind: null, u8: null, ts: null, mp4: null, video: null, frames: [], fps: 0, minPts: 0, klv: [], track: null, dur: 0, playable: false, vidUrl: null, warnings: [], inT: null, outT: null, results: [], selRes: -1, hist: [], trackPts: [], fcPts: [], series: [], bbox: null, cur: null, pick: null, sec: null, pktIdx: -1 });
+  Object.assign(S, { metaSource: '', altInfo: null, logRows: null, logSegments: [], name: '', size: 0, kind: null, u8: null, ts: null, mp4: null, video: null, frames: [], fps: 0, minPts: 0, klv: [], track: null, dur: 0, playable: false, vidUrl: null, warnings: [], inT: null, outT: null, results: [], selRes: -1, hist: [], trackPts: [], fcPts: [], series: [], bbox: null, cur: null, pick: null, sec: null, pktIdx: -1 });
   P.vt = 0; P.playing = false;
 }
 
@@ -1463,6 +1464,7 @@ async function loadTS(buf) {
   }
   assignTimes(recs, 90000, S.minPts);
   S.klv = recs.sort((a, b) => a.t - b.t);
+  if (recs.length) S.metaSource = 'MISB ST 0601 KLV (MPEG-TS)';
 }
 
 async function loadMP4(buf, file) {
@@ -1478,16 +1480,20 @@ async function loadMP4(buf, file) {
   } else warn('No video track');
   const recs = [];
   for (const t of m.tracks.filter(t => t !== vt)) {
+    const dr = droneTrackRecords(buf, t);
+    if (dr && dr.recs.length) { recs.push(...dr.recs); S.klvTrack = t; S.metaSource = dr.recs[0].f.src + (t.entryType ? ' [' + t.entryType + ']' : ''); continue; }
+    if (dr && dr.unknownProto) warn('DJI metadata protocol dvtm_' + dr.unknownProto + ' has no known field map yet — track not decoded');
+    else if (dr && dr.kind) warn(dr.kind + ' metadata track found but no positioned samples decoded');
+    const n0 = recs.length;
     for (const s of t.samples) {
       const r = scanKLV(buf.subarray(s.off, s.off + s.size));
-      for (const k of r.packets) { const rec = makeRec(k.raw, null, s.off, 'trak ' + t.id); rec.t = (s.pts - t.mediaStart) / t.timescale + t.emptyStart; recs.push(rec); }
+      for (const k of r.packets) { const rec = makeRec(k.raw, null, s.off, 'trak ' + t.id); rec.t = (s.pts - t.mediaStart) / t.timescale + t.emptyStart + CFG.klvOffset; recs.push(rec); }
     }
-    if (recs.length) S.klvTrack = t;
+    if (recs.length > n0) { S.klvTrack = t; S.metaSource = 'MISB ST 0601 KLV (MP4 ' + t.entryType + ' track)'; }
   }
-  recs.forEach(r => r.t += CFG.klvOffset);
   S.klv = recs.sort((a, b) => a.t - b.t);
   S.vidUrl = URL.createObjectURL(file); S.playable = true;
-  if (!S.klv.length) warn('No KLV metadata track in MP4 — load a sidecar (.klv / .csv / .json) to georeference');
+  if (!S.klv.length) warn('No KLV or drone metadata track in MP4 — load a sidecar (DJI .SRT, flight-log .csv, .klv, .json) to georeference');
 }
 
 function makeRec(raw, pts, off, src) {
@@ -1542,6 +1548,7 @@ function finishLoad() {
 }
 
 function rebuildTrack() {
+  S.altInfo = applyDroneAltitude(S.klv);
   S.track = S.klv.length ? new Track(S.klv) : null;
   computeDerived();
 }
@@ -1585,7 +1592,7 @@ function preloadDEM() {
   if (n < 0) status('DEM area needs ' + (-n) + ' tiles at z' + CFG.demZoom + ' — lower DEM zoom in Settings; tiles load on demand instead');
 }
 let demTimer = null;
-DEM.onUpdate = () => { clearTimeout(demTimer); demTimer = setTimeout(() => { computeDerived(); S.orthoCache = null; dirty(); updateDemStatus(); }, 250); };
+DEM.onUpdate = () => { clearTimeout(demTimer); demTimer = setTimeout(() => { if (isDroneSource() && CFG.droneAlt === 'rel' && !isNum(parseFloat(CFG.takeoffElev))) rebuildTrack(); else computeDerived(); S.orthoCache = null; dirty(); updateDemStatus(); }, 250); };
 
 /* =====================================================================
    PLAYER / CLOCK
@@ -1881,6 +1888,336 @@ function drawTimeline() {
 })();
 
 /* =====================================================================
+   DRONE TELEMETRY ADAPTERS — formats that carry camera pointing + FOV
+   (enough for a view footprint). Each adapter yields records whose
+   fields use the ST 0601 keys, so the sensor model, ortho, search and
+   exports work unchanged:
+     view attitude (absolute yaw/pitch/roll of the camera in NED)
+       -> platHdg = yaw, platPitch = platRoll = 0, relAz = 0,
+          relEl = pitch, relRoll = roll
+   Supported:
+     Parrot Anafi v3 (com.parrot.videometadata3) and protobuf (Anafi Ai/USA/UKR)
+     DJI djmd protobuf timed metadata (models with GimbalInfo, per ExifTool maps)
+     DJI SRT subtitle telemetry with gimbal angles (enterprise, Avata 360 …)
+     DJI flight-log CSV (AirData / Litchi style) with gimbal heading/pitch
+   ===================================================================== */
+Object.assign(CFG, {
+  droneAlt: 'rel',     // rel = relative/ground-distance height + take-off ground | abs = recorded absolute altitude
+  takeoffElev: '',     // m MSL; blank = DEM at first fix, else flat fallback
+  lensMm: 24,          // 35 mm-equivalent focal length when FOV is not recorded
+  hfovOverride: 0,     // deg; 0 = use metadata / lens
+  gimbalYawRel: false, // gimbal yaw recorded relative to airframe
+  logSegment: 0,       // flight-log video segment index
+});
+
+const fovFromEq = (f, zoom) => { if (!isNum(f) || f <= 0) return null; const ff = f; return 2 * Math.atan(18 / (ff * (zoom > 0 ? zoom : 1))) * R2D; };
+
+/* drone pose -> ST 0601-keyed fields */
+function dronePose(o) {
+  const f = { ts: o.ts, sensLat: o.lat, sensLon: o.lon, relAlt: o.relAlt, absAlt: o.absAlt, droneYaw: o.droneYaw, dronePitch: o.dronePitch, droneRoll: o.droneRoll, platform: o.platform, sensor: o.sensor, src: o.src };
+  let yaw = o.yaw;
+  if (isNum(yaw) && CFG.gimbalYawRel && isNum(o.droneYaw)) yaw = o.droneYaw + yaw;
+  if (!isNum(yaw) && isNum(o.pitch) && isNum(o.droneYaw)) yaw = o.droneYaw;
+  if (isNum(yaw) && isNum(o.pitch)) Object.assign(f, { platHdg: wrap360(yaw), platPitch: 0, platRoll: 0, relAz: 0, relEl: o.pitch, relRoll: o.roll || 0 });
+  let hf = CFG.hfovOverride > 0 ? CFG.hfovOverride : (isNum(o.hfov) ? o.hfov : (isNum(o.focal) ? fovFromEq(o.focal, o.zoom) : fovFromEq(CFG.lensMm, o.zoom)));
+  if (isNum(hf)) { f.hfov = hf; f.hfovSrc = CFG.hfovOverride > 0 ? 'override' : isNum(o.hfov) ? 'metadata' : isNum(o.focal) ? 'focal length' : 'lens preset'; }
+  if (isNum(o.vfov) && !(CFG.hfovOverride > 0)) f.vfov = o.vfov;
+  if (o.extra) Object.assign(f, o.extra);
+  return f;
+}
+const DRONE_NAMES = { localTime: 'Camera local time (not UTC)', relAlt: 'Height above take-off / ground distance', absAlt: 'Recorded absolute altitude', droneYaw: 'Drone yaw', dronePitch: 'Drone pitch', droneRoll: 'Drone roll', hfovSrc: 'HFOV source', src: 'Telemetry source', focal: 'Focal length (35 mm eq.)', zoom: 'Digital zoom', iso: 'ISO', shutter: 'Shutter', fnum: 'F-number', frameCnt: 'Frame count', sats: 'GNSS satellites', groundDist: 'Ground distance', batt: 'Battery %' };
+const DRONE_UNITS = { relAlt: 'm', absAlt: 'm', droneYaw: '°', dronePitch: '°', droneRoll: '°' };
+function droneRec(t, f, raw, o) {
+  const items = [];
+  const view = { platHdg: 'Camera yaw (true)', relEl: 'Camera pitch', relRoll: 'Camera roll' };
+  for (const k in f) {
+    const v = f[k]; if (v === undefined || v === null || k === 'corners') continue;
+    const ki = KEYINFO.get(k);
+    const name = view[k] || (ki ? ki[2] : DRONE_NAMES[k] || k);
+    const disp = k === 'ts' ? fmtUTC(v) : isNum(v) ? (/Lat|Lon/.test(k) ? v.toFixed(7) : Number.isInteger(v) ? String(v) : v.toFixed(3)) : String(v);
+    items.push({ tag: ki ? ki[0] : '', key: k, name, val: v, disp, units: ki ? ki[4] : DRONE_UNITS[k] || '' });
+  }
+  return { raw: raw || new Uint8Array(0), pts: null, f, items, csOk: null, t, o };
+}
+function rederiveDrone() { for (const r of S.klv) if (r.o) { const n = droneRec(r.t, dronePose(r.o), r.raw, r.o); r.f = n.f; r.items = n.items; } }
+/* resolve sensor altitude for drone records (call before building the Track) */
+function applyDroneAltitude(recs) {
+  const drone = recs.filter(r => r.f.src && (isNum(r.f.relAlt) || isNum(r.f.absAlt)));
+  if (!drone.length) return null;
+  let base = parseFloat(CFG.takeoffElev), how = 'entered';
+  if (!isNum(base)) {
+    const first = drone.find(r => isNum(r.f.sensLat));
+    const d = first && DEM.active() ? DEM.sample(first.f.sensLat, first.f.sensLon) : null;
+    if (d !== null && d !== undefined) { base = d; how = 'DEM at first fix'; } else { base = CFG.flatElev; how = 'flat fallback'; }
+  }
+  for (const r of drone) {
+    const f = r.f;
+    if (CFG.droneAlt === 'abs' && isNum(f.absAlt)) f.sensAlt = f.absAlt;
+    else if (isNum(f.relAlt)) f.sensAlt = base + f.relAlt;
+    else if (isNum(f.absAlt)) f.sensAlt = f.absAlt;
+  }
+  return { base, how };
+}
+
+/* ---------------- protobuf (generic wire decoder) ---------------- */
+function pbDecode(b, s = 0, e = b.length) {
+  const out = new Map(); let i = s;
+  const varint = () => { let v = 0n, sh = 0n; for (let k = 0; k < 10 && i < e; k++) { const x = b[i++]; v |= BigInt(x & 0x7F) << sh; sh += 7n; if (!(x & 0x80)) break; } return v; };
+  while (i < e) {
+    const key = Number(varint()), fn = key >>> 3, wt = key & 7;
+    let v;
+    if (wt === 0) v = { wt, v: varint() };
+    else if (wt === 1) { if (i + 8 > e) break; v = { wt, s: i }; i += 8; }
+    else if (wt === 5) { if (i + 4 > e) break; v = { wt, s: i }; i += 4; }
+    else if (wt === 2) { const L = Number(varint()); if (L < 0 || i + L > e) break; v = { wt, s: i, e: i + L }; i += L; }
+    else break;
+    if (fn === 0) break;
+    if (!out.has(fn)) out.set(fn, []); out.get(fn).push(v);
+  }
+  return out;
+}
+const pbDV = b => new DataView(b.buffer, b.byteOffset, b.byteLength);
+function pbGet(b, msg, path) { // path [3,3,4,1] -> first matching node
+  let m = msg, node = null;
+  for (let k = 0; k < path.length; k++) {
+    const arr = m.get(path[k]); if (!arr || !arr.length) return null;
+    node = arr[0];
+    if (k < path.length - 1) { if (node.wt !== 2) return null; m = pbDecode(b, node.s, node.e); }
+  }
+  return node;
+}
+function pbNum(b, node, kind) {
+  if (!node) return null;
+  const dv = pbDV(b);
+  if (node.wt === 1) return dv.getFloat64(node.s, true);
+  if (node.wt === 5) return kind === 'u32' ? dv.getUint32(node.s, true) : dv.getFloat32(node.s, true);
+  if (node.wt === 0) { let v = node.v; if (kind === 'sint') v = (v >> 1n) ^ -(v & 1n); else if (v >= 1n << 63n) v -= 1n << 64n; return Number(v); }
+  return null;
+}
+const pbMsg = (b, node) => node && node.wt === 2 ? pbDecode(b, node.s, node.e) : null;
+
+/* ---------------- quaternion -> yaw/pitch/roll (ZYX, body->NED) ---------------- */
+function quatEuler(w, x, y, z) {
+  const n = Math.hypot(w, x, y, z) || 1; w /= n; x /= n; y /= n; z /= n;
+  return { yaw: Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)) * R2D, pitch: Math.asin(clamp(2 * (w * y - z * x), -1, 1)) * R2D, roll: Math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y)) * R2D };
+}
+
+/* ---------------- Parrot ---------------- */
+function parseParrotV3(b) {
+  if (b.length < 72) return null;
+  const dv = pbDV(b);
+  if (dv.getUint16(0) !== 0x5033) return null;
+  const q = o => dv.getInt16(o) / 16384;
+  const o = { src: 'Parrot vmeta v3', platform: 'Parrot Anafi' };
+  o.groundDist = dv.getInt32(4) / 65536;
+  o.lat = dv.getInt32(8) / 4194304; o.lon = dv.getInt32(12) / 4194304;
+  const as = dv.getInt32(16); o.absAlt = (as >> 8) / 256; o.sats = as & 0xFF;
+  const dq = quatEuler(q(28), q(30), q(32), q(34));
+  const fq = quatEuler(q(44), q(46), q(48), q(50));
+  Object.assign(o, { droneYaw: dq.yaw, dronePitch: dq.pitch, droneRoll: dq.roll, yaw: fq.yaw, pitch: fq.pitch, roll: fq.roll });
+  o.hfov = dv.getUint16(60) / 256; o.vfov = dv.getUint16(62) / 256;
+  o.batt = b[69];
+  if (o.lat >= 499 || (o.lat === 0 && o.lon === 0)) { o.lat = null; o.lon = null; }
+  // extensions
+  const len = dv.getUint16(2) * 4 + 4;
+  for (let p = 72; p + 4 <= Math.min(b.length, len);) {
+    const id = dv.getUint16(p), el = dv.getUint16(p + 2) * 4;
+    if (id === 0x4531 && el >= 8) o.mono = dv.getUint32(p + 4) * 4294967296 + dv.getUint32(p + 8);
+    p += 4 + el;
+  }
+  o.relAlt = o.groundDist;
+  o.extra = { groundDist: o.groundDist, sats: o.sats, batt: o.batt };
+  return o;
+}
+function parseParrotProto(b) {
+  const m = pbDecode(b); const drone = pbMsg(b, (m.get(1) || [])[0]), cam = pbMsg(b, (m.get(2) || [])[0]);
+  if (!drone && !cam) return null;
+  const o = { src: 'Parrot vmeta protobuf', platform: 'Parrot Anafi Ai/USA/UKR' };
+  const quat = msg => msg ? quatEuler(...[1, 2, 3, 4].map(k => pbNum(b, (msg.get(k) || [])[0]) ?? 0)) : null;
+  if (drone) {
+    const loc = pbMsg(b, (drone.get(2) || [])[0]);
+    if (loc) { o.lat = pbNum(b, (loc.get(1) || [])[0]); o.lon = pbNum(b, (loc.get(2) || [])[0]); const hae = pbNum(b, (loc.get(3) || [])[0]); if (isNum(hae)) o.absAlt = hae - CFG.geoidOffset; o.sats = pbNum(b, (loc.get(4) || [])[0]); }
+    o.groundDist = pbNum(b, (drone.get(3) || [])[0]); o.relAlt = o.groundDist;
+    const dq = quat(pbMsg(b, (drone.get(1) || [])[0])); if (dq) Object.assign(o, { droneYaw: dq.yaw, dronePitch: dq.pitch, droneRoll: dq.roll });
+  }
+  if (cam) {
+    const fq = quat(pbMsg(b, (cam.get(3) || [])[0])); if (fq) Object.assign(o, { yaw: fq.yaw, pitch: fq.pitch, roll: fq.roll });
+    o.hfov = pbNum(b, (cam.get(8) || [])[0]); o.vfov = pbNum(b, (cam.get(9) || [])[0]);
+    const utc = pbNum(b, (cam.get(10) || [])[0]); if (utc) o.ts = utc;
+  }
+  if (o.lat === 0 && o.lon === 0) o.lat = o.lon = null;
+  o.extra = { groundDist: o.groundDist, sats: o.sats };
+  return o;
+}
+
+/* ---------------- DJI djmd (paths from ExifTool DJI.pm) ---------------- */
+const DJMD_LAYOUT = {
+  A: { drone: [3, 3, 3], gps: [3, 3, 4, 1], abs: [3, 3, 4, 2], rel: [3, 3, 5, 1], gimbal: [3, 4, 3], zoom: [3, 2, 6, 1] },
+  B: { drone: [3, 4, 3], gps: [3, 4, 4, 1], abs: [3, 4, 4, 2], rel: [3, 4, 5, 1] },
+};
+const DJMD_MODELS = { // protocol -> [layout, name, 35mm-eq focal of main camera]
+  wm265e: ['A', 'DJI Mavic 3', 24], pm320: ['A', 'DJI Matrice 30', 24], Mini4_Pro: ['A', 'DJI Mini 4 Pro', 24], Air3: ['A', 'DJI Air 3', 24], Air3s: ['A', 'DJI Air 3S', 24],
+  Lito_X1: ['A', 'DJI Lito X1', 24], wa345e: ['A', 'DJI Matrice 4E', 24], wm261: ['A', 'DJI Mavic 3 Pro', 24], wm260: ['A', 'DJI Mavic 3 Cine', 24],
+  Mavic4: ['A', 'DJI Mavic 4 Pro', 28], Mini5Pro: ['A', 'DJI Mini 5 Pro', 24], AVATA2: ['B', 'DJI Avata 2', 12], dji_neo: ['B', 'DJI Neo', 14], NEO2: ['B', 'DJI Neo 2', 14],
+};
+function djmdProtocol(b) {
+  const s = new TextDecoder('latin1').decode(b.subarray(0, Math.min(b.length, 4096)));
+  const m = s.match(/dvtm_([A-Za-z0-9_\-]+)\.proto/); return m ? m[1] : null;
+}
+function parseDJMD(b, proto) {
+  const md = DJMD_MODELS[proto]; if (!md) return null;
+  const L = DJMD_LAYOUT[md[0]], m = pbDecode(b);
+  const o = { src: 'DJI djmd (' + proto + ')', platform: md[1] };
+  const g = pbMsg(b, pbGet(b, m, L.gps));
+  if (g) { const units = pbNum(b, (g.get(1) || [])[0]); let la = pbNum(b, (g.get(2) || [])[0]), lo = pbNum(b, (g.get(3) || [])[0]); if (!units && isNum(la)) { la *= R2D; lo *= R2D; } o.lat = la; o.lon = lo; }
+  const ab = pbNum(b, pbGet(b, m, L.abs)); if (isNum(ab)) o.absAlt = ab / 1000;
+  const rl = L.rel && pbNum(b, pbGet(b, m, L.rel)); if (isNum(rl)) o.relAlt = rl / 1000;
+  const d = pbMsg(b, pbGet(b, m, L.drone));
+  if (d) { o.droneRoll = (pbNum(b, (d.get(1) || [])[0]) || 0) / 10; o.dronePitch = (pbNum(b, (d.get(2) || [])[0]) || 0) / 10; o.droneYaw = (pbNum(b, (d.get(3) || [])[0]) || 0) / 10; }
+  const gi = L.gimbal && pbMsg(b, pbGet(b, m, L.gimbal));
+  if (gi) { o.pitch = (pbNum(b, (gi.get(1) || [])[0]) || 0) / 10; o.roll = (pbNum(b, (gi.get(2) || [])[0]) || 0) / 10; o.yaw = (pbNum(b, (gi.get(3) || [])[0]) || 0) / 10; }
+  const z = L.zoom && pbNum(b, pbGet(b, m, L.zoom)); if (isNum(z) && z > 0) o.zoom = z;
+  o.focal = md[2];
+  if (o.lat === 0 && o.lon === 0) o.lat = o.lon = null;
+  o.extra = { zoom: o.zoom };
+  return o;
+}
+
+/* ---------------- DJI SRT ---------------- */
+function srtTime(s) { const m = s.match(/(\d+):(\d+):(\d+)[,.](\d+)/); return m ? +m[1] * 3600 + +m[2] * 60 + +m[3] + +('0.' + m[4]) : null; }
+function parseDJISrt(text) {
+  const blocks = text.replace(/\r/g, '').split(/\n\s*\n/), recs = [];
+  const num = (s, re) => { const m = s.match(re); return m ? parseFloat(m[1]) : null; };
+  for (const bl of blocks) {
+    const tm = bl.match(/(\d+:\d+:\d+[,.]\d+)\s*-->/); if (!tm) continue;
+    const t = srtTime(tm[1]), s = bl.replace(/<[^>]*>/g, ' ');
+    const o = { src: 'DJI SRT', platform: 'DJI' };
+    o.lat = num(s, /latitude\s*:\s*(-?[\d.]+)/i); o.lon = num(s, /longitude\s*:\s*(-?[\d.]+)/i);
+    o.relAlt = num(s, /rel_alt\s*:\s*(-?[\d.]+)/i); o.absAlt = num(s, /abs_alt\s*:\s*(-?[\d.]+)/i);
+    const gps = s.match(/GPS\s*\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)/);
+    if (gps && !isNum(o.lat)) {
+      let a = +gps[1], c = +gps[2];
+      const home = s.match(/HOME\s*\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)/);
+      const swap = Math.abs(a) > 90 || (home && Math.abs(+home[1] - c) < Math.abs(+home[1] - a) && Math.abs(c) <= 90);
+      if (swap) [a, c] = [c, a];
+      o.lat = a; o.lon = c; o.absAlt = +gps[3];
+      const baro = num(s, /BAROMETER\s*:?\s*\(?\s*(-?[\d.]+)/i); if (isNum(baro)) o.relAlt = baro;
+      const H = num(s, /\bH\s+(-?[\d.]+)\s*m/); if (isNum(H)) o.relAlt = H;
+    }
+    o.yaw = num(s, /gb_yaw\s*:\s*(-?[\d.]+)/i); o.pitch = num(s, /gb_pitch\s*:\s*(-?[\d.]+)/i); o.roll = num(s, /gb_roll\s*:\s*(-?[\d.]+)/i);
+    o.droneYaw = num(s, /drone_yaw\s*:\s*(-?[\d.]+)/i); o.dronePitch = num(s, /drone_pitch\s*:\s*(-?[\d.]+)/i); o.droneRoll = num(s, /drone_roll\s*:\s*(-?[\d.]+)/i);
+    { const fm = s.match(/focal_len\s*:\s*([\d.]+)/i); o.focal = fm ? (+fm[1] > 100 && !fm[1].includes('.') ? +fm[1] / 10 : +fm[1]) : null; } o.zoom = num(s, /dzoom(?:_ratio)?\s*:\s*([\d.]+)/i);
+    const d = s.match(/(\d{4})[-.](\d{2})[-.](\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:[.,](\d+))?/);
+    o.extra = { localTime: d ? d[0] : undefined, frameCnt: num(s, /FrameCnt\s*:\s*(\d+)/i) ?? num(s, /SrtCnt\s*:\s*(\d+)/i), iso: num(s, /iso\s*:\s*(\d+)/i), focal: o.focal, zoom: o.zoom };
+    if (!isNum(o.focal)) delete o.focal;
+    if (!isNum(o.lat) || (o.lat === 0 && o.lon === 0)) continue;
+    recs.push(droneRec(t + CFG.klvOffset, dronePose(o), null, o));
+  }
+  return recs;
+}
+
+/* ---------------- flight-log CSV (AirData, Litchi, similar) ---------------- */
+function isFlightLogHeader(hdr) { const j = hdr.join('|').toLowerCase(); return /gimbal[_ ]?(pitch|heading|yaw)/.test(j) || /isvideo|iscapturingvideo/.test(j); }
+function parseFlightLogCSV(rows, hdr) {
+  const H = hdr.map(x => x.trim().toLowerCase());
+  const col = (...res) => { for (const re of res) { const i = H.findIndex(h => re.test(h)); if (i >= 0) return i; } return -1; };
+  const ft = i => i >= 0 && /feet|\(ft\)/.test(H[i]) ? 0.3048 : 1;
+  const C = {
+    lat: col(/^latitude/, /^lat\b/), lon: col(/^longitude/, /^lon/),
+    rel: col(/height_above_takeoff/, /^altitude\(/, /^height\b/, /relative/), abs: col(/altitude_above_sealevel/, /altitude.*(msl|sea)/),
+    gYaw: col(/gimbal_heading/, /gimbal.*yaw/), gPitch: col(/gimbal_pitch/, /gimbal.*pitch/), gRoll: col(/gimbal_roll/, /gimbal.*roll/),
+    dYaw: col(/compass_heading/, /^heading/, /^yaw/), dPitch: col(/^pitch\(/, /^pitch$/), dRoll: col(/^roll\(/, /^roll$/),
+    tms: col(/time\(millisecond\)/, /^time\(ms\)/, /offsettime/, /flytime/), utc: col(/datetime\(utc\)/, /^datetime/, /^date_time/), vid: col(/isvideo/, /iscapturingvideo/),
+  };
+  const v = (r, i, k = 1) => i >= 0 && r[i] !== undefined && r[i] !== '' && !isNaN(+r[i]) ? +r[i] * k : null;
+  const recs0 = [];
+  for (const r of rows) {
+    const lat = v(r, C.lat), lon = v(r, C.lon); if (!isNum(lat) || !isNum(lon) || (lat === 0 && lon === 0)) continue;
+    let tms = v(r, C.tms); if (isNum(tms) && C.tms >= 0 && !/milli|ms/.test(H[C.tms])) tms *= 1000;
+    const utcS = C.utc >= 0 ? r[C.utc] : null, utc = utcS ? Date.parse(utcS.replace(' ', 'T') + (/[zZ+]/.test(utcS) ? '' : 'Z')) : NaN;
+    recs0.push({ tms: isNum(tms) ? tms : (isNaN(utc) ? null : utc), video: C.vid >= 0 ? +r[C.vid] === 1 : null, o: { src: 'Flight log CSV', platform: 'DJI (flight log)', lat, lon, relAlt: v(r, C.rel, ft(C.rel)), absAlt: v(r, C.abs, ft(C.abs)), yaw: v(r, C.gYaw), pitch: v(r, C.gPitch), roll: v(r, C.gRoll), droneYaw: v(r, C.dYaw), dronePitch: v(r, C.dPitch), droneRoll: v(r, C.dRoll), ts: isNaN(utc) ? undefined : utc * 1000 } });
+  }
+  if (!recs0.length) return { recs: [], segments: [] };
+  // video segments
+  const segs = []; let cur = null;
+  recs0.forEach((r, i) => { if (r.video) { if (!cur) { cur = { a: i, b: i }; segs.push(cur); } else cur.b = i; } else cur = null; });
+  let t0 = recs0[0].tms ?? 0, lo = 0, hi = recs0.length - 1;
+  if (segs.length) { const sg = segs[clamp(CFG.logSegment, 0, segs.length - 1)]; t0 = recs0[sg.a].tms; lo = sg.a; hi = sg.b; }
+  const pad = 5000, recs = [];
+  for (const r of recs0) {
+    if (!isNum(r.tms)) continue;
+    if (segs.length && (r.tms < recs0[lo].tms - pad || r.tms > recs0[hi].tms + pad)) continue;
+    recs.push(droneRec((r.tms - t0) / 1000 + CFG.klvOffset, dronePose(r.o), null, r.o));
+  }
+  return { recs, segments: segs.map((s, i) => ({ i, start: recs0[s.a].tms, dur: (recs0[s.b].tms - recs0[s.a].tms) / 1000 })) };
+}
+
+/* ---------------- MP4 metadata-track dispatch ---------------- */
+function mettMime(entry) { // TextMetaDataSampleEntry: 8 hdr + 6 reserved + 2 dref, then encoding\0 mime\0
+  if (!entry || entry.length < 18) return '';
+  const s = new TextDecoder('latin1').decode(entry.subarray(16)); const parts = s.split('\0'); return (parts[1] || parts[0] || '').trim();
+}
+function droneTrackRecords(buf, t) {
+  const out = []; let kind = null, proto = null;
+  const mime = t.entryType === 'mett' ? mettMime(t.entry) : '';
+  if (/com\.parrot\.videometadata3/.test(mime)) kind = 'parrot3';
+  else if (/com\.parrot\.videometadataproto/.test(mime)) kind = 'parrotpb';
+  else if (t.entryType === 'djmd') kind = 'djmd';
+  if (!kind && t.samples.length) { const b0 = buf.subarray(t.samples[0].off, t.samples[0].off + t.samples[0].size); if (b0.length >= 2 && b0[0] === 0x50 && b0[1] === 0x33) kind = 'parrot3'; else if (djmdProtocol(b0)) kind = 'djmd'; }
+  if (!kind) return null;
+  for (const s of t.samples) {
+    const b = buf.subarray(s.off, s.off + s.size);
+    if (kind === 'djmd' && !proto) proto = djmdProtocol(b);
+    let o = null;
+    try { o = kind === 'parrot3' ? parseParrotV3(b) : kind === 'parrotpb' ? parseParrotProto(b) : proto ? parseDJMD(b, proto) : null; } catch (e) { o = null; }
+    if (!o || !isNum(o.lat)) continue;
+    out.push(droneRec((s.pts - t.mediaStart) / t.timescale + t.emptyStart + CFG.klvOffset, dronePose(o), b, o));
+  }
+  return { kind, proto, recs: out, unknownProto: kind === 'djmd' && proto && !DJMD_MODELS[proto] ? proto : null };
+}
+
+/* ---------------- ST 0601 encoder (drone telemetry -> MISB KLV) ---------------- */
+function encodeUAS(st, meta = {}) {
+  const parts = [];
+  const put = (tag, bytes) => { parts.push(u8a([tag]), berEnc(bytes.length), bytes); };
+  const U = (v, min, max, L) => { const x = Math.round((clamp(v, min, max) - min) / (max - min) * (2 ** (8 * L) - 1)); const b = new Uint8Array(L); let y = x; for (let i = L - 1; i >= 0; i--) { b[i] = y % 256; y = Math.floor(y / 256); } return b; };
+  const Sg = (v, r, L) => { let x = Math.round(clamp(v, -r, r) / r * (2 ** (8 * L - 1) - 1)); if (x < 0) x += 2 ** (8 * L); const b = new Uint8Array(L); for (let i = L - 1; i >= 0; i--) { b[i] = x % 256; x = Math.floor(x / 256); } return b; };
+  if (isNum(st.ts)) { const b = new Uint8Array(8); let y = Math.round(st.ts); for (let k = 7; k >= 0; k--) { b[k] = y % 256; y = Math.floor(y / 256); } put(2, b); }
+  if (meta.mission) put(3, enc.encode(meta.mission));
+  if (st.platform) put(10, enc.encode(String(st.platform).slice(0, 127)));
+  if (st.src) put(11, enc.encode(String(st.src).slice(0, 127)));
+  put(12, enc.encode('WGS-84'));
+  if (isNum(st.platHdg)) put(5, U(wrap360(st.platHdg), 0, 360, 2));
+  if (isNum(st.platPitch)) put(6, Sg(st.platPitch, 20, 2));
+  if (isNum(st.platRoll)) put(7, Sg(st.platRoll, 50, 2));
+  if (isNum(st.sensLat)) put(13, Sg(st.sensLat, 90, 4));
+  if (isNum(st.sensLon)) put(14, Sg(st.sensLon, 180, 4));
+  const alt = sensAltMSL(st); if (isNum(alt)) put(15, U(alt, -900, 19000, 2));
+  if (isNum(st.hfov)) put(16, U(st.hfov, 0, 180, 2));
+  const vf = vfovOf(st); if (isNum(vf)) put(17, U(vf, 0, 180, 2));
+  if (isNum(st.relAz)) put(18, U(wrap360(st.relAz), 0, 360, 4));
+  if (isNum(st.relEl)) put(19, Sg(st.relEl, 180, 4));
+  if (isNum(st.relRoll)) put(20, U(wrap360(st.relRoll), 0, 360, 4));
+  const fp = footprint(st, 1);
+  if (fp && fp.center && !fp.center.horizon) {
+    const c = fp.center; put(21, U(c.r || 0, 0, 5e6, 4));
+    put(23, Sg(c.lat, 90, 4)); put(24, Sg(c.lon, 180, 4)); put(25, U(c.h, -900, 19000, 2));
+    if (fp.pts.every(p => !p.horizon)) {
+      const off = fp.pts.every(p => Math.abs(p.lat - c.lat) < 0.075 && Math.abs(p.lon - c.lon) < 0.075);
+      fp.pts.forEach((p, k) => off ? (put(26 + 2 * k, Sg(p.lat - c.lat, 0.075, 2)), put(27 + 2 * k, Sg(p.lon - c.lon, 0.075, 2))) : (put(82 + 2 * k, Sg(p.lat, 90, 4)), put(83 + 2 * k, Sg(p.lon, 180, 4))));
+    }
+  }
+  put(65, u8a([17]));
+  const body = concatU8(parts);
+  const pre = concatU8([u8a(UAS_KEY), berEnc(body.length + 4), body, u8a([1, 2])]);
+  const cs = uasChecksum(pre, pre.length);
+  return concatU8([pre, u8a([cs >> 8, cs & 255])]);
+}
+function berEnc(n) { if (n < 128) return u8a([n]); const b = []; while (n > 0) { b.unshift(n & 255); n = Math.floor(n / 256); } return u8a([0x80 | b.length, ...b]); }
+const isDroneSource = () => S.klv.length && !!S.klv[0].f.src;
+function klvForExport(r) { return r.f.src ? encodeUAS(S.track.at(r.t), { mission: 'MIVIEWER-CONVERTED' }) : r.raw; }
+
+/* =====================================================================
    FILE PANE
    ===================================================================== */
 function buildFilePane() {
@@ -1910,7 +2247,14 @@ function buildFilePane() {
     ['Frames', S.frames.length + ' @ ' + fx(S.fps, 3) + ' fps'], ['Key frames', v.samples.filter(s => s.key).length],
     ['Playback', S.playable ? (S.kind === 'ts' ? 'remuxed in-browser to MP4' : 'native') : h('span', { class: 'badc' }, 'not playable')],
   ]));
-  p.append(h('h3', null, 'KLV metadata'), kv([
+  const dr = isDroneSource(), withPose = S.track ? S.track.recs.filter(r => hasPose(r.g)).length : 0;
+  p.append(h('h3', null, 'Metadata'), kv([
+    ['Source', S.metaSource || '–'],
+    ...(dr ? [['View geometry', withPose ? h('span', { class: 'okc' }, withPose + ' of ' + S.klv.length + ' records have camera attitude + FOV') : h('span', { class: 'badc' }, 'no camera attitude — track only')],
+      ['Altitude', S.altInfo ? (CFG.droneAlt === 'abs' ? 'recorded absolute altitude' : 'relative height + take-off ground ' + fx(S.altInfo.base, 1) + ' m (' + S.altInfo.how + ')') : '–'],
+      ['HFOV', (() => { const r = S.klv.find(x => isNum(x.f.hfov)); return r ? fx(r.f.hfov, 2) + '° from ' + r.f.hfovSrc : '–'; })()]] : []),
+  ]));
+  if (!dr) p.append(h('h3', null, 'KLV metadata'), kv([
     ['Packets', S.klv.length + (span > 0 ? ' · ' + (S.klv.length / span).toFixed(1) + ' Hz' : '')],
     ['Span', S.klv.length ? fmtT(S.klv[0].t) + ' → ' + fmtT(S.klv[S.klv.length - 1].t) : '–'],
     ['UTC', S.klv.length ? fmtUTC(S.klv[0].f.ts) : '–'],
@@ -1924,7 +2268,7 @@ function buildFilePane() {
   p.append(h('h3', null, 'Add data'), h('div', { class: 'btns' },
     h('button', { onclick: () => pickFile('.klv,.bin,.csv,.json', f => loadSidecar(f)) }, 'Sidecar metadata…'),
     h('button', { onclick: () => pickFile('.asc,.txt', f => loadASC(f)) }, 'DEM (ESRI ASCII)…')),
-    h('div', { class: 'note' }, 'Sidecar: raw KLV (.klv/.bin), CSV with tag-name/key/tag-number headers plus a time column (t, seconds), or this tool\'s JSON export. DEM: geographic WGS84 ESRI ASCII grid, heights MSL.'));
+    h('div', { class: 'note' }, 'Sidecar: DJI .SRT (gimbal angles needed for a view box), DJI flight-log CSV (AirData/Litchi: gimbal_heading/pitch), raw KLV (.klv/.bin), CSV with ST 0601 tag names plus a t column, or this tool\'s JSON export. Embedded Parrot Anafi and DJI djmd tracks are read from the MP4 automatically. DEM: geographic WGS84 ESRI ASCII grid, heights MSL.'));
 }
 function pickFile(accept, cb) { const i = h('input', { type: 'file', accept }); i.onchange = () => i.files[0] && cb(i.files[0]); i.click(); }
 
@@ -2105,11 +2449,11 @@ function buildExportPane() {
     h('h3', null, 'Motion imagery'),
     h('div', { class: 'btns' },
       B('MPEG-TS clip (.ts)', exportTS, S.kind !== 'ts' || !hasV, 'Packet-level cut — all PIDs incl. KLV preserved byte-exact (MISB ST 1402 transport)'),
-      B('MP4 + KLV track (.mp4)', exportMP4, !canMP4, 'Video copied bit-exact; KLV as ISO BMFF timed-metadata track (urim, UAS LS UL) referenced to video'),
+      B(isDroneSource() ? 'MP4 + MISB KLV (converted)' : 'MP4 + KLV track (.mp4)', exportMP4, !canMP4, isDroneSource() ? 'Video copied bit-exact; drone telemetry converted to ST 0601 KLV (pose, FOV, frame centre and computed corners) in an ISO BMFF timed-metadata track' : 'Video copied bit-exact; KLV as ISO BMFF timed-metadata track (urim, UAS LS UL) referenced to video'),
       B('Burn-in WebM (real-time)', exportWebM, !S.playable, 'Records the clip with a metadata overlay — plays the clip in real time')),
     h('h3', null, 'Metadata'),
     h('div', { class: 'btns' },
-      B('Raw KLV (.klv)', exportKLV, !S.klv.length),
+      B(isDroneSource() ? 'ST 0601 KLV (converted)' : 'Raw KLV (.klv)', exportKLV, !S.klv.length),
       B('Packets CSV', exportCSVPackets, !S.klv.length),
       B('Per-frame CSV', exportCSVFrames, !S.track),
       B('JSON', exportJSON, !S.klv.length)),
@@ -2155,12 +2499,12 @@ function exportMP4() {
   const { k, e, tStart } = clipSamples(), v = S.video, [, b] = clipRange();
   const samples = v.samples.slice(k, e).map(s => S.kind === 'ts' ? s : { ...s, src: S.u8.subarray(s.off, s.off + s.size) });
   const entry = S.kind === 'ts' ? avc1Entry(v.sps, v.pps, v.width, v.height) : v.entry;
-  const klv = S.klv.filter(r => r.t >= tStart - 1e-6 && r.t <= b + 1e-6).map(r => ({ t: r.t - tStart, raw: r.raw }));
+  const klv = S.klv.filter(r => r.t >= tStart - 1e-6 && r.t <= b + 1e-6).map(r => ({ t: r.t - tStart, raw: klvForExport(r) }));
   download(baseName() + '.mp4', writeMP4({ timescale: v.timescale, entry, width: v.width || CFG.imgW, height: v.height || CFG.imgH, samples }, klv));
   status('MP4 exported: ' + samples.length + ' frames, ' + klv.length + ' KLV samples');
 }
 const inClip = r => { const [a, b] = clipRange(); return r.t >= a - 1e-6 && r.t <= b + 1e-6; };
-function exportKLV() { download(baseName() + '.klv', S.klv.filter(inClip).map(r => r.raw)); }
+function exportKLV() { download(baseName() + '.klv', S.klv.filter(inClip).map(klvForExport)); }
 const csvCell = v => v === null || v === undefined ? '' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toPrecision(10)) : '"' + String(v).replace(/"/g, '""') + '"';
 function exportCSVPackets() {
   const R = S.klv.filter(inClip), keys = [];
@@ -2276,6 +2620,10 @@ async function loadSidecar(file) {
       const r = scanKLV(new Uint8Array(await file.arrayBuffer()));
       recs = r.packets.map(k => makeRec(k.raw, null, k.pos, 'sidecar'));
       assignTimes(recs, 1, 0);
+    } else if (/\.srt$/.test(name)) {
+      recs = parseDJISrt(await file.text());
+      if (!recs.length) throw new Error('no positioned DJI telemetry blocks');
+      if (!recs.some(r => isNum(r.f.relEl))) S.warnings.push('This SRT has no gimbal angles (gb_yaw/gb_pitch) — track only, no view footprint');
     } else if (/\.json$/.test(name)) {
       const j = JSON.parse(await file.text());
       const arr = j.records || j;
@@ -2283,7 +2631,15 @@ async function loadSidecar(file) {
     } else if (/\.csv$/.test(name)) {
       const lines = (await file.text()).split(/\r?\n/).filter(l => l.trim());
       const split = l => { const o = []; let cur = '', q = false; for (let i = 0; i < l.length; i++) { const ch = l[i]; if (q) { if (ch === '"' && l[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; } else if (ch === '"') q = true; else if (ch === ',') { o.push(cur); cur = ''; } else cur += ch; } o.push(cur); return o; };
-      const hdr = split(lines[0]), map = hdr.map(hh => { const n = norm(hh); if (['t', 'time', 'seconds', 'sec', 'elapsed'].includes(n)) return '__t'; return ALIAS.get(n) || null; });
+      const hdr = split(lines[0]);
+      if (isFlightLogHeader(hdr)) {
+        S.logRows = { rows: lines.slice(1).map(split), hdr };
+        const fl = parseFlightLogCSV(S.logRows.rows, hdr); recs = fl.recs; S.logSegments = fl.segments;
+        if (!recs.length) throw new Error('no positioned rows in flight log');
+        if (fl.segments.length > 1) S.warnings.push('Flight log has ' + fl.segments.length + ' video segments — using #' + (clamp(CFG.logSegment, 0, fl.segments.length - 1) + 1) + ' (change in Settings → Drone)');
+        if (!fl.segments.length) S.warnings.push('Flight log has no isVideo column — t = 0 is the first log row; adjust KLV time offset to sync');
+      } else {
+      const map = hdr.map(hh => { const n = norm(hh); if (['t', 'time', 'seconds', 'sec', 'elapsed'].includes(n)) return '__t'; return ALIAS.get(n) || null; });
       if (!map.some(Boolean)) throw new Error('no recognised columns');
       for (let i = 1; i < lines.length; i++) {
         const c = split(lines[i]), f = {}; let t = null;
@@ -2293,11 +2649,12 @@ async function loadSidecar(file) {
       }
       const t0 = recs.find(r => isNum(r.f.ts));
       recs.forEach(r => { if (!isNum(r.t)) r.t = t0 && isNum(r.f.ts) ? (r.f.ts - t0.f.ts) / 1e6 : 0; r.t += CFG.klvOffset; });
+      }
     } else { status('Unsupported sidecar: ' + file.name, 'badc'); return; }
   } catch (e) { status('Sidecar error: ' + e.message, 'badc'); return; }
   if (!recs.length) { status('No metadata found in ' + file.name, 'badc'); return; }
   recs.sort((a, b) => a.t - b.t);
-  S.sidecar = recs; S.klv = recs;
+  S.sidecar = recs; S.klv = recs; S.metaSource = recs[0].f.src ? recs[0].f.src + ' (' + file.name + ')' : 'Sidecar ' + file.name;
   if (!S.name) { S.name = file.name; $('#fileName').textContent = file.name; $('#drop').style.display = 'none'; }
   S.warnings.push('Metadata from sidecar ' + file.name + ' (' + recs.length + ' records)');
   finishLoad();
@@ -2330,6 +2687,15 @@ function buildSetPane() {
     h('div', { class: 'grid2' }, h('label', null, 'Terrarium zoom (10–14)'), num('demZoom', true, 1), h('label', null, 'Flat fallback elev m'), num('flatElev', true), h('label', null, 'Geoid N m (HAE→MSL)'), num('geoidOffset', true), h('label', null, 'Max ray range m'), num('maxRange', true, 1000)),
     h('div', { class: 'btns' }, h('button', { onclick: () => pickFile('.asc,.txt', f => loadASC(f)) }, 'Load ASCII grid…')),
     h('div', { class: 'note', id: 'demStat' }),
+    h('h3', null, 'Drone telemetry (non-MISB)'),
+    h('div', { class: 'grid2' },
+      h('label', null, 'Altitude reference'), sel('droneAlt', [['rel', 'Relative height + take-off ground'], ['abs', 'Recorded absolute altitude']], false, () => { rebuildTrack(); buildFilePane(); }),
+      h('label', { title: 'Blank = DEM at first position, else flat fallback' }, 'Take-off ground m MSL'), h('input', { type: 'text', value: CFG.takeoffElev, placeholder: 'auto', onchange: e => { CFG.takeoffElev = e.target.value.trim(); rebuildTrack(); buildFilePane(); apply(false); } }),
+      h('label', { title: 'Used when the metadata has no FOV or focal length' }, 'Lens (35 mm eq.) mm'), num('lensMm', false, 1, () => { rederiveDrone(); rebuildTrack(); buildFilePane(); }),
+      h('label', null, 'HFOV override °'), num('hfovOverride', false, 0.1, () => { rederiveDrone(); rebuildTrack(); buildFilePane(); }),
+      h('label', null, 'Gimbal yaw relative'), h('input', { type: 'checkbox', checked: CFG.gimbalYawRel, onchange: e => { CFG.gimbalYawRel = e.target.checked; rederiveDrone(); rebuildTrack(); apply(false); } }),
+      ...(S.logSegments && S.logSegments.length > 1 ? [h('label', null, 'Flight-log video segment'), h('select', { onchange: e => { CFG.logSegment = +e.target.value; const fl = parseFlightLogCSV(S.logRows.rows, S.logRows.hdr); S.klv = S.sidecar = fl.recs; finishLoad(); } }, S.logSegments.map(sg => h('option', { value: sg.i, selected: sg.i === CFG.logSegment }, '#' + (sg.i + 1) + ' · ' + sg.dur.toFixed(0) + ' s')))] : [])),
+    h('div', { class: 'note' }, 'For DJI SRT, DJI djmd, Parrot and flight-log sources. DJI absolute altitude is often unreliable; relative height plus take-off ground is the default. Gimbal yaw is taken as absolute (true) unless ticked.'),
     h('h3', null, 'Footprint & interpolation'),
     h('div', { class: 'grid2' },
       h('label', null, 'Footprint source'), sel('footprint', [['auto', 'Auto (pose → corners)'], ['computed', 'Sensor model only'], ['metadata', 'KLV corners only']], true),
