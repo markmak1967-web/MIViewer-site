@@ -54,6 +54,9 @@ body.dragover #mapWrap{outline:2px dashed var(--acc);outline-offset:-6px}
 #vid{width:100%;height:100%;display:block;object-fit:fill}
 #vidOv{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}
 #vid{transform-origin:50% 50%}
+table.caltab{width:100%;border-collapse:collapse}
+table.caltab td{white-space:nowrap;padding:2px 3px}
+table.caltab button{padding:1px 6px}
 #vz{position:absolute;right:6px;top:6px;display:flex;gap:2px;align-items:center;background:rgba(0,0,0,.55);padding:2px 3px;border-radius:3px;z-index:2}
 #vz button{padding:1px 7px;min-width:0}
 #vz span{color:var(--fg);padding:0 4px;min-width:38px;text-align:center}
@@ -185,6 +188,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
     <button data-p="pMeta">META</button>
     <button data-p="pMarks">MARKS</button>
     <button data-p="pObjects">OBJECTS</button>
+    <button data-p="pCal">CAL</button>
     <button data-p="pSearch">SEARCH</button>
     <button data-p="pExport">EXPORT</button>
     <button data-p="pSet">SETTINGS</button>
@@ -193,6 +197,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
   <div class="pane" id="pMeta"></div>
   <div class="pane" id="pMarks"></div>
   <div class="pane" id="pObjects"></div>
+  <div class="pane" id="pCal"></div>
   <div class="pane" id="pSearch"></div>
   <div class="pane" id="pExport"></div>
   <div class="pane" id="pSet"></div>
@@ -206,7 +211,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.5.0', build: 10 };
+const BUILD = { ver: 'R0.6.0', build: 11 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -1068,7 +1073,7 @@ function useComputed(st) {
   return hasPose(st);
 }
 /* ground point for normalised pixel; returns {lat,lon,h,horizon} */
-function makeProjector(st) {
+function makeProjectorRaw(st) {
   if (useComputed(st)) {
     const R = sensorRot(st);
     return {
@@ -1439,9 +1444,9 @@ const warn = m => { S.warnings.push(m); console.warn(m); };
 function resetState() {
   if (S.vidUrl) URL.revokeObjectURL(S.vidUrl);
   vid.removeAttribute('src'); vid.load();
-  Object.assign(S, { marks: [], selMark: null, libItemId: null, libMarks: null, libObjects: null, metaSource: '', altInfo: null, logRows: null, logSegments: [], name: '', size: 0, kind: null, u8: null, ts: null, mp4: null, video: null, frames: [], fps: 0, minPts: 0, klv: [], track: null, dur: 0, playable: false, vidUrl: null, warnings: [], inT: null, outT: null, results: [], selRes: -1, hist: [], trackPts: [], fcPts: [], series: [], bbox: null, cur: null, pick: null, sec: null, pktIdx: -1 });
+  Object.assign(S, { marks: [], selMark: null, libItemId: null, libMarks: null, libObjects: null, libCal: null, metaSource: '', altInfo: null, logRows: null, logSegments: [], name: '', size: 0, kind: null, u8: null, ts: null, mp4: null, video: null, frames: [], fps: 0, minPts: 0, klv: [], track: null, dur: 0, playable: false, vidUrl: null, warnings: [], inT: null, outT: null, results: [], selRes: -1, hist: [], trackPts: [], fcPts: [], series: [], bbox: null, cur: null, pick: null, sec: null, pktIdx: -1 });
   P.vt = 0; P.playing = false;
-  if (typeof LIB !== 'undefined' && LIB.pending) { S.libItemId = LIB.pending.id; S.libMarks = LIB.pending.marks; S.libObjects = LIB.pending.objects || null; LIB.pending = null; }
+  if (typeof LIB !== 'undefined' && LIB.pending) { S.libItemId = LIB.pending.id; S.libMarks = LIB.pending.marks; S.libObjects = LIB.pending.objects || null; S.libCal = LIB.pending.cal || null; LIB.pending = null; }
 }
 
 async function openFiles(files) {
@@ -1595,7 +1600,7 @@ function finishLoad() {
   DEM.reset(); preloadDEM();
   if (S.bbox) MapV.fit(S.bbox);
   buildFilePane(); buildMetaPane(); buildSearchPane(); buildExportPane();
-  TL.v0 = TL.v1 = 0; thumbsReset(); loadMarks(S.libMarks); loadObjects(); vzReset();
+  TL.v0 = TL.v1 = 0; thumbsReset(); loadMarks(S.libMarks); loadObjects(); loadCal(); vzReset();
   seek(S.frames.length ? S.frames[0] : 0);
   dirty();
 }
@@ -1775,6 +1780,7 @@ MapV.overlay = g => {
   }
   if (S.pick) { const [x, y] = MapV.toScr(S.pick.lat, S.pick.lon); g.strokeStyle = '#fff'; g.lineWidth = 2; g.beginPath(); g.arc(x, y, 6, 0, 7); g.stroke(); g.strokeStyle = COL.acc; g.lineWidth = 1; g.beginPath(); g.arc(x, y, 6, 0, 7); g.stroke(); }
   if (typeof drawObjectsMap === 'function') { g.save(); drawObjectsMap(g); g.restore(); }
+  if (typeof calDrawMap === 'function') { g.save(); calDrawMap(g); g.restore(); }
 };
 function updateLegend() {
   const L = [['Sensor track', COL.track], ['Frame centre track', COL.fc, 'dashed'], ['Current footprint', COL.acc], ['Footprint history', 'rgba(205,211,217,.5)'], ['AOI', COL.aoi]];
@@ -1862,6 +1868,7 @@ function drawVidOverlay() {
   vg.strokeStyle = 'rgba(240,160,48,.7)'; vg.lineWidth = 1;
   vg.beginPath(); vg.moveTo(W / 2 - 12, H / 2); vg.lineTo(W / 2 - 4, H / 2); vg.moveTo(W / 2 + 4, H / 2); vg.lineTo(W / 2 + 12, H / 2); vg.moveTo(W / 2, H / 2 - 12); vg.lineTo(W / 2, H / 2 - 4); vg.moveTo(W / 2, H / 2 + 4); vg.lineTo(W / 2, H / 2 + 12); vg.stroke();
   if (typeof drawObjectsVideo === 'function') { vg.save(); drawObjectsVideo(vg, W, H); vg.restore(); }
+  if (typeof calDrawVideo === 'function') { vg.save(); calDrawVideo(vg, W, H); vg.restore(); }
   if (!cur || !cur.proj) return;
   const toPx = uv => vzToPx(uv, W, H);
   if (S.aoi.length && S.aoiDone) {
@@ -1884,6 +1891,7 @@ function drawVidOverlay() {
 }
 vo.addEventListener('click', e => {
   if (OBJ.drawing || performance.now() - (OBJ.lastTag || 0) < 400 || performance.now() - (VZ.dragged || 0) < 300) return;
+  if (CAL.mode && calImgClick(vzUV(e))) return;
   { const [hu, hv] = vzUV(e), o = hitObject(hu, hv); if (o) { OBJ.sel = o.id; document.querySelector('[data-p=pObjects]').click(); buildObjPane(); status(o.code + (o.label ? ' ' + o.label : '') + ' selected — Delete key removes it; “＋ Add outline” adds a new outline'); dirty(); return; } }
   const cur = S.cur; if (!cur || !cur.proj) return;
   const [u, v] = vzUV(e);
@@ -2540,6 +2548,7 @@ function installKeys() {
     else if (k === 'End') seek(S.dur);
     else if (k === 'f' || k === 'F') S.bbox && MapV.fit(S.bbox);
     else if (k === 'Enter' && OBJ.drawing) { const pts = OBJ.drawing; finishTag(pts); }
+    else if (k === 'Escape' && CAL.mode) calCancel();
     else if (k === 'Escape' && OBJ.drawing) cancelTag();
     else if (k === 'Escape' && OBJ.job) OBJ.job.cancel = true;
     else if ((k === 't' || k === 'T') && !OBJ.drawing) startTag();
@@ -2720,6 +2729,7 @@ function geomProv(st, kind) {
   chk('relEl', 'camera pointing'); chk('platHdg', 'heading'); chk('hfov', 'HFOV'); chk('sensAlt', 'altitude');
   if (p.hfov === 'd') notes.push('HFOV from focal length');
   if (!(isNum(st.vfov) && st.vfov > 0)) notes.push('VFOV from aspect');
+  if (typeof CAL !== 'undefined' && CAL.on && CAL.list.some(c => c.on !== false && c.corr)) notes.push('analyst-calibrated (' + CAL.list.filter(c => c.on !== false && c.corr).length + ' control line(s))');
   if (DEM.active()) notes.push('terrain: DEM');
   else if (isNum(st.fcElev) || isNum(st.fcHAE)) notes.push('ground: KLV frame-centre elevation');
   else { level = 'a'; notes.push('ground: flat ' + CFG.flatElev + ' m'); }
@@ -2814,7 +2824,7 @@ function grabFrame(url, t) {
 }
 async function catalogItem(file, path, sidecars, prev) {
   const id = libId(path), now = new Date().toISOString();
-  const props = { title: file.name, created: prev ? prev.properties.created : now, updated: now, 'miv:path': path, 'miv:sidecars': sidecars.map(s => s._path || s.name), 'file:size': file.size, 'miv:file_mtime': file.lastModified, 'miv:bookmarks': prev ? prev.properties['miv:bookmarks'] || [] : [], 'miv:objects': prev ? prev.properties['miv:objects'] || [] : [] };
+  const props = { title: file.name, created: prev ? prev.properties.created : now, updated: now, 'miv:path': path, 'miv:sidecars': sidecars.map(s => s._path || s.name), 'file:size': file.size, 'miv:file_mtime': file.lastModified, 'miv:bookmarks': prev ? prev.properties['miv:bookmarks'] || [] : [], 'miv:objects': prev ? prev.properties['miv:objects'] || [] : [], 'miv:calibration': prev ? prev.properties['miv:calibration'] : undefined };
   const item = { type: 'Feature', stac_version: '1.0.0', stac_extensions: [], id, collection: 'miviewer-library', geometry: null, bbox: undefined, properties: props, links: [{ rel: 'root', href: '../catalog.json', type: 'application/json' }, { rel: 'parent', href: '../catalog.json', type: 'application/json' }, { rel: 'collection', href: '../catalog.json', type: 'application/json' }, { rel: 'self', href: './' + id + '.json', type: 'application/geo+json' }], assets: {} };
   item.assets.video = { href: '../../' + path.split('/').map(encodeURIComponent).join('/'), type: /\.(mp4|m4v|mov)$/i.test(path) ? 'video/mp4' : 'video/mp2t', roles: ['data'], title: file.name };
   if (prev && prev.assets && prev.assets.objects) item.assets.objects = prev.assets.objects;
@@ -2994,6 +3004,13 @@ function libObjectsChanged() {
   if (LIB.mode !== 'fs') return;
   (OBJ.list.length ? fsWrite(LIB.dir, '.miviewer/objects/' + id + '.json', JSON.stringify({ item: id, source: it.properties['miv:path'], objects: OBJ.list })) : fsRemove(LIB.dir, '.miviewer/objects/' + id + '.json')).then(() => libSaveItem(it)).catch(e => console.warn(e));
 }
+function libCalChanged() {
+  if (!S.libItemId || !LIB.items.has(S.libItemId)) return;
+  const it = LIB.items.get(S.libItemId);
+  it.properties['miv:calibration'] = CAL.list.length || CAL.meas.length ? { on: CAL.on, list: CAL.list.map(c => ({ id: c.id, n: c.n, t: c.t, map: c.map, img: c.img, on: c.on, created: c.created })), meas: CAL.meas.map(m => ({ id: m.id, n: m.n, t: m.t, img: m.img, created: m.created })) } : undefined;
+  it.properties.updated = new Date().toISOString();
+  clearTimeout(libSaveTimer); libSaveTimer = setTimeout(() => libSaveItem(it).catch(e => console.warn(e)), 600);
+}
 async function libLoadObjects(id) {
   if (LIB.objCache && LIB.objCache.has(id)) return JSON.parse(JSON.stringify(LIB.objCache.get(id)));
   const it = LIB.items.get(id); if (!it || !it.assets.objects || LIB.mode !== 'fs') return null;
@@ -3008,7 +3025,7 @@ async function libOpenItem(id) {
     else { file = LIB.files.get(path) || null; scs = scp.map(p => LIB.files.get(p)).filter(Boolean); }
   } catch (e) { file = null; }
   if (!file) { libStatus('“' + it.properties.title + '” is not available — reconnect or re-select the library folder'); return; }
-  LIB.pending = { id, marks: it.properties['miv:bookmarks'] || [] };
+  LIB.pending = { id, marks: it.properties['miv:bookmarks'] || [], cal: it.properties['miv:calibration'] || null };
   closeLib();
   await openFiles([file, ...scs]);
 }
@@ -3720,6 +3737,244 @@ function buildObjPane(keep) {
 }
 
 /* =====================================================================
+   CALIBRATION (control lines) and MENSURATION
+   The analyst measures a feature on the overhead map (flat, horizontal), then clicks the same
+   two points, in the same order, on a paused video frame. The sensor model's ground points for
+   those pixels are compared with the map points, giving a 2-D similarity in the local ground
+   plane about the frame-centre ground point: scale (FOV / zoom / altitude error), rotation
+   (heading / roll bias) and offset (position bias). Corrections blend linearly in time between
+   lines and hold the nearest outside them; every ground position the app computes goes through
+   makeProjector(), so the view box, objects, picks, search and exports are all corrected.
+   ===================================================================== */
+const CAL = { list: [], meas: [], on: true, mode: null, pend: null, sel: null };
+const CAL_COL = '#e37ad6', MEAS_COL = '#4dd0c8';
+const enuOf = (C, lat, lon) => [(lon - C.lon) * mpdLon(C.lat), (lat - C.lat) * mpdLat(C.lat)]; // [east, north] m
+const llOf = (C, e, n) => ({ lat: C.lat + n / mpdLat(C.lat), lon: C.lon + e / mpdLon(C.lat) });
+const rot2 = (th, [x, y]) => [x * Math.cos(th) - y * Math.sin(th), x * Math.sin(th) + y * Math.cos(th)];
+const horiz = (a, b) => Math.hypot((b.lon - a.lon) * mpdLon((a.lat + b.lat) / 2), (b.lat - a.lat) * mpdLat((a.lat + b.lat) / 2));
+const brg = (a, b) => wrap360(Math.atan2((b.lon - a.lon) * mpdLon(a.lat), (b.lat - a.lat) * mpdLat(a.lat)) * R2D);
+
+/* Sensor-parameter correction: pointing bias (azimuth, elevation, roll) and FOV scale, solved by
+   damped least squares from the two control points; it transfers across time as the platform moves. */
+const stCorr = (st, x) => { const o = { ...st, relAz: st.relAz + x[0], relEl: st.relEl + x[1], relRoll: (st.relRoll || 0) + x[2], hfov: st.hfov * Math.exp(x[3]) }; if (isNum(st.vfov) && st.vfov > 0) o.vfov = st.vfov * Math.exp(x[3]); return o; };
+function calSolveSensor(st, C, img, map) {
+  if (!useComputed(st)) return null;
+  const tgt = map.map(m => enuOf(C, m.lat, m.lon));
+  const res = x => { const P = makeProjectorRaw(stCorr(st, x)); if (!P) return null; const r = []; for (let i = 0; i < 2; i++) { const g = P.toGround(img[i][0], img[i][1]); if (!g || g.horizon) return null; const e = enuOf(C, g.lat, g.lon); r.push(e[0] - tgt[i][0], e[1] - tgt[i][1]); } return r; };
+  let x = [0, 0, 0, 0], r = res(x); if (!r) return null; let lam = 1e-3;
+  const hs = [0.01, 0.01, 0.01, 2e-4], norm = v => v.reduce((a, b) => a + b * b, 0);
+  for (let it = 0; it < 30; it++) {
+    const J = hs.map((hh, k) => { const xp = x.slice(); xp[k] += hh; const rp = res(xp); return rp ? rp.map((v, i) => (v - r[i]) / hh) : null; });
+    if (J.some(j => !j)) break;
+    // normal equations (4x4) with damping
+    const A = [0, 1, 2, 3].map(a => [0, 1, 2, 3].map(b => J[a].reduce((s2, v, i) => s2 + v * J[b][i], 0))), g = [0, 1, 2, 3].map(a => J[a].reduce((s2, v, i) => s2 + v * r[i], 0));
+    let improved = false;
+    for (let tries = 0; tries < 6 && !improved; tries++) {
+      const M = A.map((row, i) => row.map((v, j) => v + (i === j ? lam * (A[i][i] + 1e-9) : 0)));
+      const dx = solve4(M, g.map(v => -v)); if (!dx) { lam *= 10; continue; }
+      const xn = x.map((v, i) => v + dx[i]), rn = res(xn);
+      if (rn && norm(rn) < norm(r)) { x = xn; r = rn; lam = Math.max(1e-6, lam / 5); improved = true; } else lam *= 10;
+    }
+    if (!improved || norm(r) < 1e-6) break;
+  }
+  if (Math.sqrt(norm(r) / 4) > 2 || Math.abs(x[3]) > 0.7 || Math.max(...x.slice(0, 3).map(Math.abs)) > 30) return null; // implausible: fall back to the ground-plane correction
+  return { az: x[0], el: x[1], roll: x[2], k: Math.exp(x[3]), rms: Math.sqrt(norm(r) / 4) };
+}
+function solve4(M, b) { // Gaussian elimination
+  const n = 4, A = M.map((r, i) => [...r, b[i]]);
+  for (let i = 0; i < n; i++) { let p = i; for (let k = i + 1; k < n; k++) if (Math.abs(A[k][i]) > Math.abs(A[p][i])) p = k; if (Math.abs(A[p][i]) < 1e-12) return null; [A[i], A[p]] = [A[p], A[i]]; for (let k = i + 1; k < n; k++) { const f = A[k][i] / A[i][i]; for (let j = i; j <= n; j++) A[k][j] -= f * A[i][j]; } }
+  const x = Array(n).fill(0); for (let i = n - 1; i >= 0; i--) { let s2 = A[i][n]; for (let j = i + 1; j < n; j++) s2 -= A[i][j] * x[j]; x[i] = s2 / A[i][i]; } return x;
+}
+function calSolve(c) { // c: { t, map:[{lat,lon}x2], img:[[u,v]x2] } -> adds raw ground points and the correction
+  const st = S.track && S.track.at(c.t), P = st && makeProjectorRaw(st); if (!P) return false;
+  const C = P.toGround(0, 0), A = P.toGround(...c.img[0]), B = P.toGround(...c.img[1]);
+  if (!C || C.horizon || !A || A.horizon || !B || B.horizon) return false;
+  const p1 = enuOf(C, A.lat, A.lon), p2 = enuOf(C, B.lat, B.lon), m1 = enuOf(C, c.map[0].lat, c.map[0].lon), m2 = enuOf(C, c.map[1].lat, c.map[1].lon);
+  const vr = [p2[0] - p1[0], p2[1] - p1[1]], vm = [m2[0] - m1[0], m2[1] - m1[1]], lr = Math.hypot(...vr), lm = Math.hypot(...vm);
+  if (lr < 0.01 || lm < 0.01) return false;
+  const s = lm / lr, th = Math.atan2(vm[1], vm[0]) - Math.atan2(vr[1], vr[0]);
+  const pm = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2], mm = [(m1[0] + m2[0]) / 2, (m1[1] + m2[1]) / 2], q = rot2(th, pm);
+  c.raw = [{ lat: A.lat, lon: A.lon, h: A.h }, { lat: B.lat, lon: B.lon, h: B.h }];
+  c.corr = { s, th: Math.atan2(Math.sin(th), Math.cos(th)), tx: mm[0] - s * q[0], ty: mm[1] - s * q[1] };
+  c.lenMap = lm; c.lenRaw = lr; c.offset = Math.hypot(mm[0] - pm[0], mm[1] - pm[1]);
+  c.sens = calSolveSensor(st, C, c.img, c.map);
+  return true;
+}
+function calBlend(L, t, key, mix) {
+  L = L.filter(c => c[key]); if (!L.length) return null;
+  const i = bsearchLE(L, t, c => c.t);
+  if (i < 0) return L[0][key];
+  if (i >= L.length - 1) return L[L.length - 1][key];
+  const a = L[i], b = L[i + 1]; if (b.t - a.t < 1e-3) return a[key];
+  return mix(a[key], b[key], (t - a.t) / (b.t - a.t));
+}
+const angMix = (a, b, f) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * f;
+function calAt(t) { // blended corrections at time t: {sens, corr} or null
+  const L = CAL.on ? CAL.list.filter(c => c.on !== false && c.corr) : []; if (!L.length) return null;
+  return {
+    sens: calBlend(L, t, 'sens', (A, B, f) => ({ az: lerp(A.az, B.az, f), el: lerp(A.el, B.el, f), roll: lerp(A.roll, B.roll, f), k: lerp(A.k, B.k, f) })),
+    corr: calBlend(L, t, 'corr', (A, B, f) => ({ s: lerp(A.s, B.s, f), th: angMix(A.th, B.th, f), tx: lerp(A.tx, B.tx, f), ty: lerp(A.ty, B.ty, f) })),
+  };
+}
+function makeProjector(st) {
+  const P0 = makeProjectorRaw(st); if (!P0 || !st) return P0;
+  const KK = calAt(st.t ?? 0); if (!KK) return P0;
+  if (KK.sens && useComputed(st)) { // camera-parameter correction (preferred: physically consistent through time)
+    const S2 = KK.sens, P = makeProjectorRaw(stCorr(st, [S2.az, S2.el, S2.roll, Math.log(S2.k)])); if (!P) return P0;
+    return { ...P, cal: KK, calKind: 'sensor', raw: P0, toGround: (u, v) => { const g = P.toGround(u, v); return g && !g.horizon ? { ...g, cal: true } : g; } };
+  }
+  const K = KK.corr; if (!K) return P0; const P = P0;
+  const C = P.toGround(0, 0); if (!C || C.horizon) return P;
+  const fwd = g => { if (!g || g.horizon) return g; const d = rot2(K.th, enuOf(C, g.lat, g.lon)), q = llOf(C, K.s * d[0] + K.tx, K.s * d[1] + K.ty); return { ...g, lat: q.lat, lon: q.lon, h: DEM.active() ? groundElev(q.lat, q.lon, st) : g.h, cal: true }; };
+  const inv = (lat, lon) => { const d = enuOf(C, lat, lon), r = rot2(-K.th, [(d[0] - K.tx) / K.s, (d[1] - K.ty) / K.s]); return llOf(C, r[0], r[1]); };
+  return { kind: P.kind, R: P.R, cal: KK, calKind: 'ground', raw: P, toGround: (u, v) => fwd(P.toGround(u, v)), toImage: (lat, lon, h) => { const q = inv(lat, lon); return P.toImage(q.lat, q.lon, h); } };
+}
+function calChanged() {
+  CAL.list.sort((a, b) => a.t - b.t);
+  try { localStorage.setItem(calKey(), JSON.stringify({ list: CAL.list, meas: CAL.meas, on: CAL.on })); } catch (e) { }
+  if (typeof libCalChanged === 'function') libCalChanged();
+  // everything derived from ground geometry is recomputed
+  if (S.track) { computeDerived(); S.orthoCache = null; }
+  if (typeof OBJ !== 'undefined') { for (const o of OBJ.list) for (const s of o.samples) s.g = groundOf(s.t, s.c); _objPolyCache.clear(); }
+  for (const m of CAL.meas) calMeasSolve(m);
+  buildCalPane(); updateLegend(); dirty();
+}
+const calKey = () => 'miv-cal:' + S.name + ':' + S.size;
+function loadCal() {
+  let j = S.libCal || null;
+  if (!j) try { j = JSON.parse(localStorage.getItem(calKey()) || 'null'); } catch (e) { }
+  CAL.list = (j && j.list) || []; CAL.meas = (j && j.meas) || []; CAL.on = j ? j.on !== false : true; CAL.mode = null; CAL.pend = null;
+  CAL.list.forEach(c => calSolve(c)); CAL.meas.forEach(m => calMeasSolve(m));
+  if (CAL.list.length && S.track) { computeDerived(); S.orthoCache = null; }
+  buildCalPane(); dirty();
+}
+
+/* ---------- interaction ---------- */
+function calStart(kind) {
+  if (!S.dur || !S.track) { status('Load a video with sensor geometry first', 'badc'); return; }
+  P.pause(); if (OBJ.drawing) cancelTag();
+  CAL.mode = kind === 'meas' ? 'meas1' : 'map1'; CAL.pend = { t: S.frames.length ? S.frames[frameIndex(P.time())] : P.time(), map: [], img: [] };
+  calHint(); buildCalPane(); dirty();
+}
+function calCancel() { CAL.mode = null; CAL.pend = null; status('Cancelled'); buildCalPane(); dirty(); }
+function calHint() {
+  const H = { map1: 'Calibration: click point A of the feature on the MAP (zoom the map in close)', map2: 'Calibration: click point B on the MAP', img1: 'Calibration: now click the same point A on the VIDEO (zoom the video for precision)', img2: 'Calibration: click point B on the VIDEO', meas1: 'Measure: click the first point on the VIDEO', meas2: 'Measure: click the second point on the VIDEO' };
+  status((H[CAL.mode] || '') + ' · Esc cancels');
+}
+function calMapClick(lat, lon) {
+  if (CAL.mode !== 'map1' && CAL.mode !== 'map2') return false;
+  CAL.pend.map.push({ lat, lon }); CAL.mode = CAL.mode === 'map1' ? 'map2' : 'img1';
+  if (Math.abs(P.time() - CAL.pend.t) > frameDt()) seek(CAL.pend.t);
+  calHint(); dirty(); return true;
+}
+function calImgClick(uv) {
+  if (!CAL.mode || CAL.mode.startsWith('map')) return false;
+  if (Math.abs(P.time() - CAL.pend.t) > frameDt() * 0.6) { status('Calibration points must be on the frame at ' + tcOf(CAL.pend.t) + ' — returning there', 'badc'); P.pause(); seek(CAL.pend.t); return true; }
+  CAL.pend.img.push(uv);
+  if (CAL.mode === 'img1') { CAL.mode = 'img2'; calHint(); }
+  else if (CAL.mode === 'meas1') { CAL.mode = 'meas2'; calHint(); }
+  else if (CAL.mode === 'img2') {
+    const c = { id: uuid(), n: Math.max(0, ...CAL.list.map(x => x.n || 0)) + 1, t: CAL.pend.t, map: CAL.pend.map, img: CAL.pend.img, created: new Date().toISOString(), on: true };
+    CAL.mode = null; CAL.pend = null;
+    if (!calSolve(c)) { status('Could not project those points to the ground (ray misses ground) — try points nearer the frame centre', 'badc'); buildCalPane(); return true; }
+    CAL.list.push(c); CAL.sel = c.id; calChanged();
+    status('Calibration line C' + c.n + (c.sens ? ' (camera correction az ' + c.sens.az.toFixed(2) + '°, el ' + c.sens.el.toFixed(2) + '°, roll ' + c.sens.roll.toFixed(2) + '°, FOV ×' + c.sens.k.toFixed(3) + ')' : '') + ': map ' + c.lenMap.toFixed(1) + ' m vs video ' + c.lenRaw.toFixed(1) + ' m → scale ' + ((c.corr.s - 1) * 100).toFixed(1) + '%, rotation ' + (c.corr.th * R2D).toFixed(2) + '°, offset ' + c.offset.toFixed(1) + ' m');
+    document.querySelector('[data-p=pCal]').click();
+  } else if (CAL.mode === 'meas2') {
+    const m = { id: uuid(), n: Math.max(0, ...CAL.meas.map(x => x.n || 0)) + 1, t: CAL.pend.t, img: CAL.pend.img, created: new Date().toISOString() };
+    CAL.mode = null; CAL.pend = null;
+    if (!calMeasSolve(m)) { status('Could not project those points to the ground', 'badc'); buildCalPane(); return true; }
+    CAL.meas.push(m); calChanged(); status('M' + m.n + ': ' + fmtLen(m.dist) + ' horizontal, bearing ' + m.brg.toFixed(1) + '°T' + (m.cal ? ' (calibrated; uncalibrated ' + fmtLen(m.distRaw) + ')' : ' (uncalibrated)'));
+    document.querySelector('[data-p=pCal]').click();
+  }
+  dirty(); return true;
+}
+const fmtLen = d => d >= 1000 ? (d / 1000).toFixed(3) + ' km' : d.toFixed(d < 10 ? 2 : 1) + ' m';
+function calMeasSolve(m) {
+  const st = S.track && S.track.at(m.t); if (!st) return false;
+  const P = makeProjector(st), R = makeProjectorRaw(st); if (!P || !R) return false;
+  const a = P.toGround(...m.img[0]), b = P.toGround(...m.img[1]), ar = R.toGround(...m.img[0]), br = R.toGround(...m.img[1]);
+  if (!a || a.horizon || !b || b.horizon) return false;
+  m.g = [{ lat: a.lat, lon: a.lon, h: a.h }, { lat: b.lat, lon: b.lon, h: b.h }]; m.dist = horiz(a, b); m.brg = brg(a, b); m.dh = isNum(a.h) && isNum(b.h) ? b.h - a.h : null;
+  m.distRaw = ar && br && !ar.horizon && !br.horizon ? horiz(ar, br) : null; m.cal = !!P.cal;
+  return true;
+}
+function calRemove(id) { CAL.list = CAL.list.filter(c => c.id !== id); calChanged(); status('Calibration line removed'); }
+function measRemove(id) { CAL.meas = CAL.meas.filter(m => m.id !== id); calChanged(); status('Measurement removed'); }
+
+/* ---------- drawing ---------- */
+function calDrawMap(g) {
+  const ln = (a, b, col, w, dash) => { const [x0, y0] = MapV.toScr(a.lat, a.lon), [x1, y1] = MapV.toScr(b.lat, b.lon); g.strokeStyle = col; g.lineWidth = w; g.setLineDash(dash || []); g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke(); g.setLineDash([]); return [x0, y0, x1, y1]; };
+  const dot = (p, col) => { const [x, y] = MapV.toScr(p.lat, p.lon); g.fillStyle = col; g.strokeStyle = '#000'; g.beginPath(); g.arc(x, y, 3.5, 0, 7); g.fill(); g.stroke(); };
+  const lbl = (x, y, txt, col) => { g.font = '11px ' + getComputedStyle(document.body).fontFamily; g.fillStyle = 'rgba(0,0,0,.65)'; g.fillRect(x + 5, y - 9, g.measureText(txt).width + 6, 13); g.fillStyle = col; g.fillText(txt, x + 8, y + 1); };
+  for (const c of CAL.list) {
+    if (!c.raw) continue;
+    const off = c.on === false || !CAL.on;
+    ln(c.raw[0], c.raw[1], 'rgba(227,122,214,.55)', 1, [3, 3]); // where the uncorrected sensor model put it
+    const [, , x1, y1] = ln(c.map[0], c.map[1], off ? 'rgba(227,122,214,.4)' : CAL_COL, c.id === CAL.sel ? 3 : 2);
+    dot(c.map[0], CAL_COL); dot(c.map[1], CAL_COL); lbl(x1, y1, 'C' + c.n + ' ' + fmtLen(c.lenMap) + (off ? ' (off)' : ''), CAL_COL);
+  }
+  for (const m of CAL.meas) { if (!m.g) continue; const [, , x1, y1] = ln(m.g[0], m.g[1], MEAS_COL, 2); dot(m.g[0], MEAS_COL); dot(m.g[1], MEAS_COL); lbl(x1, y1, 'M' + m.n + ' ' + fmtLen(m.dist), MEAS_COL); }
+  if (CAL.pend && CAL.pend.map.length) { CAL.pend.map.forEach(p => dot(p, '#fff')); if (CAL.pend.map.length === 2) ln(CAL.pend.map[0], CAL.pend.map[1], '#fff', 2, [4, 3]); }
+}
+function calDrawVideo(g, W, H) {
+  const t = P.time(), st = S.cur && S.cur.st, Pj = S.cur && S.cur.proj, toPx = uv => vzToPx(uv, W, H), here = x => Math.abs(x.t - t) < frameDt() * 0.6;
+  const seg = (a, b, col, w, dash) => { const [x0, y0] = toPx(a), [x1, y1] = toPx(b); g.strokeStyle = col; g.lineWidth = w; g.setLineDash(dash || []); g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke(); g.setLineDash([]); [[x0, y0], [x1, y1]].forEach(([x, y]) => { g.strokeRect(x - 3, y - 3, 6, 6); }); return [x1, y1]; };
+  const lbl = ([x, y], txt, col) => { g.font = '11px ' + getComputedStyle(document.body).fontFamily; g.fillStyle = 'rgba(0,0,0,.65)'; g.fillRect(x + 6, y - 9, g.measureText(txt).width + 6, 13); g.fillStyle = col; g.fillText(txt, x + 9, y + 1); };
+  for (const c of CAL.list) {
+    if (here(c)) lbl(seg(c.img[0], c.img[1], CAL_COL, 2), 'C' + c.n, CAL_COL);
+    else if (Pj && st && c.on !== false && CAL.on) { // the map line re-projected into this frame: shows how well the calibration holds
+      const a = Pj.toImage(c.map[0].lat, c.map[0].lon, groundElev(c.map[0].lat, c.map[0].lon, st)), b = Pj.toImage(c.map[1].lat, c.map[1].lon, groundElev(c.map[1].lat, c.map[1].lon, st));
+      if (a && b && Math.max(...a.map(Math.abs), ...b.map(Math.abs)) < 1.2) lbl(seg(a, b, 'rgba(227,122,214,.7)', 1.5, [5, 4]), 'C' + c.n, CAL_COL);
+    }
+  }
+  for (const m of CAL.meas) if (here(m)) lbl(seg(m.img[0], m.img[1], MEAS_COL, 2), 'M' + m.n + ' ' + fmtLen(m.dist), MEAS_COL);
+  if (CAL.pend && CAL.pend.img.length) CAL.pend.img.forEach(p => { const [x, y] = toPx(p); g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.strokeRect(x - 4, y - 4, 8, 8); });
+  if (CAL.mode) { g.fillStyle = 'rgba(0,0,0,.6)'; g.fillRect(4, 4, 360, 16); g.fillStyle = CAL.mode.startsWith('map') ? '#f2d45c' : '#fff'; g.font = '11px ' + getComputedStyle(document.body).fontFamily; g.fillText({ map1: 'CAL: click point A on the MAP', map2: 'CAL: click point B on the MAP', img1: 'CAL: click the same point A here', img2: 'CAL: click point B here', meas1: 'MEASURE: click the first point', meas2: 'MEASURE: click the second point' }[CAL.mode] + ' · Esc cancels', 8, 15); }
+}
+
+/* ---------- CAL pane ---------- */
+function buildCalPane() {
+  const p = $('#pCal'); if (!p) return; p.innerHTML = '';
+  const busy = !!CAL.mode;
+  p.append(h('h3', null, 'Calibration lines (map ↔ frame)'),
+    h('div', { class: 'note' }, 'Measure a feature on the overhead map, then click the same two points (same order) on the paused frame. The difference between the map line and where the sensor model puts those pixels gives the error at that time: solved as camera pointing (azimuth, elevation, roll) and field-of-view corrections when the metadata has camera pointing, which carry through time as the platform moves; otherwise as a ground-plane scale, rotation and offset. Corrections blend between lines and apply to the view box, objects, picks, measurements and exports. Map distances are flat (horizontal), not over terrain.'),
+    h('label', { class: 'row', style: 'gap:6px;margin:6px 0' }, h('input', { type: 'checkbox', checked: CAL.on, onchange: e => { CAL.on = e.target.checked; calChanged(); } }), h('b', null, 'Apply calibration'), h('span', { class: 'dim' }, CAL.list.length ? '— untick to compare with the raw sensor model' : '')),
+    h('div', { class: 'btns' },
+      h('button', { style: 'border-color:' + CAL_COL + ';color:' + CAL_COL, disabled: busy, onclick: () => calStart('cal') }, '＋ Calibration line'),
+      h('button', { style: 'border-color:' + MEAS_COL + ';color:' + MEAS_COL, disabled: busy, onclick: () => calStart('meas') }, '📏 Measure on video'),
+      busy ? h('button', { onclick: calCancel }, 'Cancel (Esc)') : null));
+  if (CAL.list.length) p.append(h('table', { class: 'caltab' },
+    h('tr', null, ['', 'time', 'map', 'scale', 'rot', 'offset', ''].map(x => h('td', { class: 'dim' }, x))),
+    CAL.list.map(c => h('tr', { style: c.id === CAL.sel ? 'background:rgba(227,122,214,.12)' : '' },
+      h('td', null, h('input', { type: 'checkbox', checked: c.on !== false, title: 'use this line', onchange: e => { c.on = e.target.checked; calChanged(); } }), h('b', { style: 'color:' + CAL_COL }, ' C' + c.n)),
+      h('td', { class: 'k', style: 'cursor:pointer', title: 'go to this frame', onclick: () => { P.pause(); seek(c.t); CAL.sel = c.id; buildCalPane(); } }, tcOf(c.t)),
+      h('td', { title: 'video (uncorrected) ' + (c.lenRaw ? fmtLen(c.lenRaw) : '–') }, c.lenMap ? fmtLen(c.lenMap) : '–'),
+      h('td', null, c.corr ? ((c.corr.s - 1) * 100).toFixed(1) + '%' : '–'), h('td', null, c.corr ? (c.corr.th * R2D).toFixed(2) + '°' : '–'), h('td', null, c.offset != null ? c.offset.toFixed(1) + ' m' : '–'),
+      h('td', null, h('button', { title: 'Remove this calibration line', onclick: () => calRemove(c.id) }, 'Remove'))))),
+    h('div', { class: 'dim' }, CAL.list.filter(c => c.sens).map(c => 'C' + c.n + ' camera correction: azimuth ' + c.sens.az.toFixed(2) + '°, elevation ' + c.sens.el.toFixed(2) + '°, roll ' + c.sens.roll.toFixed(2) + '°, FOV ×' + c.sens.k.toFixed(3)).join(' · ') || (CAL.list.length ? 'Ground-plane correction (no camera pointing in the metadata)' : '')));
+  else p.append(h('p', { class: 'muted' }, 'No calibration lines.'));
+  p.append(h('h3', null, 'Measurements'));
+  if (CAL.meas.length) p.append(h('table', { class: 'caltab' },
+    h('tr', null, ['', 'time', 'distance', 'bearing', 'Δh', ''].map(x => h('td', { class: 'dim' }, x))),
+    CAL.meas.map(m => h('tr', null, h('td', null, h('b', { style: 'color:' + MEAS_COL }, 'M' + m.n)),
+      h('td', { class: 'k', style: 'cursor:pointer', onclick: () => { P.pause(); seek(m.t); } }, tcOf(m.t)),
+      h('td', { title: m.cal && m.distRaw != null ? 'uncalibrated ' + fmtLen(m.distRaw) : 'no calibration applied' }, m.dist != null ? fmtLen(m.dist) + (m.cal ? ' ✓' : '') : '–'), h('td', null, m.brg != null ? m.brg.toFixed(1) + '°T' : '–'), h('td', null, m.dh != null ? m.dh.toFixed(1) + ' m' : '–'),
+      h('td', null, h('button', { title: 'Remove this measurement', onclick: () => measRemove(m.id) }, 'Remove'))))),
+    h('div', { class: 'btns' }, h('button', { onclick: exportCal }, 'Export calibration + measurements (GeoJSON)')));
+  else p.append(h('p', { class: 'muted' }, 'No measurements. Distances are horizontal ground distance from the (calibrated) sensor model; Δh comes from the DEM / ground model.'));
+}
+function exportCal() {
+  const F = [];
+  for (const c of CAL.list) if (c.raw) {
+    F.push({ type: 'Feature', properties: { kind: 'calibration_map_line', id: c.id, name: 'C' + c.n, t: c.t, timecode: tcOf(c.t), length_m: +c.lenMap.toFixed(3), enabled: c.on !== false }, geometry: { type: 'LineString', coordinates: c.map.map(p => [p.lon, p.lat]) } });
+    F.push({ type: 'Feature', properties: { kind: 'calibration_sensor_line', id: c.id, name: 'C' + c.n + ' (uncorrected sensor model)', length_m: +c.lenRaw.toFixed(3), scale: +c.corr.s.toFixed(5), rotation_deg: +(c.corr.th * R2D).toFixed(3), offset_m: +c.offset.toFixed(2), camera_correction: c.sens ? { azimuth_deg: +c.sens.az.toFixed(4), elevation_deg: +c.sens.el.toFixed(4), roll_deg: +c.sens.roll.toFixed(4), fov_scale: +c.sens.k.toFixed(5) } : null, image_uv: c.img }, geometry: { type: 'LineString', coordinates: c.raw.map(p => [p.lon, p.lat]) } });
+  }
+  for (const m of CAL.meas) if (m.g) F.push({ type: 'Feature', properties: { kind: 'measurement', id: m.id, name: 'M' + m.n, t: m.t, timecode: tcOf(m.t), distance_m: +m.dist.toFixed(3), bearing_deg: +m.brg.toFixed(2), dh_m: m.dh != null ? +m.dh.toFixed(2) : null, calibrated: m.cal, uncalibrated_distance_m: m.distRaw != null ? +m.distRaw.toFixed(3) : null, image_uv: m.img }, geometry: { type: 'LineString', coordinates: m.g.map(p => [p.lon, p.lat, +(p.h || 0).toFixed(1)]) } });
+  download((S.name || 'misb').replace(/\.[^.]+$/, '') + '_calibration.geojson', JSON.stringify({ type: 'FeatureCollection', name: S.name + ' calibration and measurements', features: F }), 'application/geo+json');
+}
+
+/* =====================================================================
    FILE PANE
    ===================================================================== */
 function buildFilePane() {
@@ -4296,7 +4551,8 @@ function init() {
   });
   cv.addEventListener('pointerup', e => {
     cv.classList.remove('drag');
-    if (drag && !moved && S.drawing) { const r = cv.getBoundingClientRect(); S.aoi.push(MapV.fromScr(e.clientX - r.left, e.clientY - r.top)); dirty(); }
+    if (drag && !moved && CAL.mode) { const r = cv.getBoundingClientRect(), [la, lo] = MapV.fromScr(e.clientX - r.left, e.clientY - r.top); calMapClick(la, lo); }
+    else if (drag && !moved && S.drawing) { const r = cv.getBoundingClientRect(); S.aoi.push(MapV.fromScr(e.clientX - r.left, e.clientY - r.top)); dirty(); }
     drag = null;
   });
   cv.addEventListener('dblclick', e => { e.preventDefault(); if (S.drawing) { if (S.aoi.length > 1) S.aoi.pop(); finishAOI(); } else { const r = cv.getBoundingClientRect(); MapV.zoomAt(1, e.clientX - r.left, e.clientY - r.top); } });
@@ -4320,7 +4576,7 @@ function init() {
     }
     origDraw();
   };
-  buildSetPane(); buildSearchPane(); buildExportPane(); buildMarksPane(); buildObjPane();
+  buildSetPane(); buildSearchPane(); buildExportPane(); buildMarksPane(); buildObjPane(); buildCalPane();
   requestAnimationFrame(loop);
 }
 init();
