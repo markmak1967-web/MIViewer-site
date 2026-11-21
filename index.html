@@ -217,7 +217,7 @@ kbd{border:1px solid var(--line2);padding:0 3px;border-radius:2px;color:var(--mu
    No external libraries. No embedded binary. Network use is optional:
    basemap tiles and Terrarium DEM tiles only, both switchable off.
    ===================================================================== */
-const BUILD = { ver: 'R0.12.1', build: 20 };
+const BUILD = { ver: 'R0.13.0', build: 21 };
 
 /* ---------- small utilities ---------- */
 const $ = s => document.querySelector(s);
@@ -1017,7 +1017,7 @@ function imgSize() { if (IMGSZ) return IMGSZ; return [S.video && S.video.width |
 function vfovOf(st) { if (isNum(st.vfov) && st.vfov > 0) return st.vfov; const [w, h] = imgSize(); return isNum(st.hfov) ? 2 * Math.atan(Math.tan(st.hfov * D2R / 2) * h / w) * R2D : null; }
 function hasPose(st) { return st && isNum(st.sensLat) && isNum(st.sensLon) && isNum(sensAltMSL(st)) && isNum(st.platHdg) && isNum(st.relAz) && isNum(st.relEl) && isNum(st.hfov) && st.hfov > 0; }
 function sensorRot(st) {
-  const P = m3(m3(rz(st.platHdg * D2R), ry((st.platPitch || 0) * D2R)), rx((st.platRoll || 0) * D2R));
+  const P = S.quirk && S.quirk.absLOS ? m3(rz(0), rz(0)) : m3(m3(rz(st.platHdg * D2R), ry((st.platPitch || 0) * D2R)), rx((st.platRoll || 0) * D2R)); // earth-referenced gimbal angles (encoder quirk): no platform attitude
   const aA = S.anchor && S.anchor.on && isNum(st.ancAz) ? st.ancAz : 0, aE = S.anchor && S.anchor.on && isNum(st.ancEl) ? st.ancEl : 0;
   const Q = m3(m3(rz((st.relAz + aA) * D2R), ry((st.relEl + aE) * D2R)), rx((st.relRoll || 0) * D2R));
   return m3(P, Q);
@@ -1670,7 +1670,7 @@ function rebuildTrack() {
   applyAssumptions(S.klv);
   S.tier = S.klv.length ? computeTier() : null;
   S.track = S.klv.length ? new Track(S.klv) : null;
-  computeAnchors();
+  detectAbsLOS(); computeAnchors();
   updateTierBadge();
   computeDerived();
 }
@@ -2922,17 +2922,40 @@ function hpNoise(P) { // high-frequency noise of a point series (m): deviation f
   for (let i = 3; i < P.length - 3; i++) { let a = 0, b = 0; for (let j = -3; j <= 3; j++) if (j) { a += P[i + j][0]; b += P[i + j][1]; } const dn = (P[i][0] - a / 6) * 110574, de = (P[i][1] - b / 6) * 111320 * Math.cos(P[i][0] * D2R); s += dn * dn + de * de; c++; }
   return c ? Math.sqrt(s / c) : 0;
 }
+/* Earth-referenced gimbal angles in the 'relative' tags (some older encoders): if the reported sensor relative azimuth
+   matches the true bearing from the sensor to the encoder's own frame centre on most packets, and heading + relative
+   azimuth does not, the gimbal angles are taken as true azimuth / elevation and the platform attitude is not applied. */
+Object.assign(CFG, { absLOS: 'auto' });
+function detectAbsLOS() {
+  S.quirk = S.quirk || {}; S.quirk.absLOS = false;
+  if (!S.track || CFG.absLOS === 'off') return;
+  if (CFG.absLOS === 'on') { S.quirk.absLOS = true; return; }
+  const R = S.track.recs.filter(r => isNum(r.f.fcLat) && isNum(r.f.fcLon) && hasPose(r.g) && isNum(r.g.platHdg));
+  if (R.length < 2) return;
+  let abs = 0, rel = 0;
+  for (const r of R) {
+    const g = r.g, n = (r.f.fcLat - g.sensLat) * mpdLat(g.sensLat), e = (r.f.fcLon - g.sensLon) * mpdLon(g.sensLat); if (Math.hypot(n, e) < 200) continue;
+    const azT = Math.atan2(e, n) * R2D, dA = Math.abs(((g.relAz - azT + 540) % 360) - 180), dR = Math.abs(((g.platHdg + g.relAz - azT + 540) % 360) - 180);
+    if (dA < 5 && dR > 15) abs++; else if (dR < 5) rel++;
+  }
+  S.quirk.absLOS = abs >= 2 && abs > 2 * rel;
+}
 function computeAnchors() {
   const A = S.anchor = { on: false, mode: CFG.anchorFC, n: 0, noiseRaw: null, noiseEnc: null, noiseAnch: null, maxCorr: 0 };
   if (!S.track || CFG.anchorFC === 'off') return;
   const R = S.track.recs.filter(r => isNum(r.f.fcLat) && isNum(r.f.fcLon) && hasPose(r.g));
-  if (R.length < 8) return;
+  if (R.length < (CFG.anchorFC === 'on' ? 1 : 2)) return;
   const saveDEM = DEM.active; DEM.active = () => false; // solve against the encoder's own flat ground (its frame-centre elevation)
   try {
     const raw = [], enc = [];
     for (const r of R) { const st = { ...r.g, t: r.t }; delete st.ancAz; delete st.ancEl; const P = makeProjectorRaw(st); const g = P && P.toGround(0, 0); raw.push(g && !g.horizon ? [g.lat, g.lon] : [r.f.fcLat, r.f.fcLon]); enc.push([r.f.fcLat, r.f.fcLon]); }
     A.noiseRaw = hpNoise(raw); A.noiseEnc = hpNoise(enc);
-    const want = CFG.anchorFC === 'on' || (A.noiseRaw > 1.5 && A.noiseRaw > 3 * A.noiseEnc);
+    // also a gross bias: the sensor model misses the ground, or lands far from the encoder's own frame centre
+    const dist = R.map((r, i) => { const st = { ...r.g, t: r.t }; delete st.ancAz; delete st.ancEl; const P = makeProjectorRaw(st), g = P && P.toGround(0, 0); if (!g || g.horizon) return Infinity; return Math.hypot((g.lat - r.f.fcLat) * mpdLat(r.f.fcLat), (g.lon - r.f.fcLon) * mpdLon(r.f.fcLat)); }).sort((a, b) => a - b);
+    A.biasMed = dist[dist.length >> 1];
+    const rng = R.map(r => Math.hypot((r.f.fcLat - r.g.sensLat) * mpdLat(r.g.sensLat), (r.f.fcLon - r.g.sensLon) * mpdLon(r.g.sensLat))).sort((a, b) => a - b)[R.length >> 1];
+    A.bias = A.biasMed > Math.max(100, 0.05 * rng);
+    const want = CFG.anchorFC === 'on' || (R.length >= 8 && A.noiseRaw > 1.5 && A.noiseRaw > 3 * A.noiseEnc) || (CFG.anchorFC === 'auto' && A.bias);
     for (const r of S.track.recs) { delete r.g.ancAz; delete r.g.ancEl; }
     if (!want) return;
     const out = [];
@@ -2940,14 +2963,21 @@ function computeAnchors() {
       const base = { ...r.g, t: r.t }; delete base.ancAz; delete base.ancEl;
       const m = mpdLat(r.f.fcLat), mo = mpdLon(r.f.fcLat);
       const res = x => { const P = makeProjectorRaw({ ...base, relAz: base.relAz + x[0], relEl: base.relEl + x[1] }); const g = P && P.toGround(0, 0); return g && !g.horizon ? [(g.lat - r.f.fcLat) * m, (g.lon - r.f.fcLon) * mo] : null; };
-      let x = [0, 0], e = res(x); if (!e) continue;
+      // start from the direct sensor -> frame-centre direction (works even when the metadata angles point above the horizon)
+      let x = [0, 0], e = res(x);
+      if (!e) {
+        const d = norm3(mv3(sensorRot(base), [1, 0, 0])), la = base.sensLat, lo = base.sensLon, mm = mpdLat(la), mmo = mpdLon(la);
+        const n = (r.f.fcLat - la) * mm, ee2 = (r.f.fcLon - lo) * mmo, dn = sensAltMSL(base) - (isNum(r.f.fcElev) ? r.f.fcElev : refElev(base)) - (n * n + ee2 * ee2) / (2 * RE);
+        const azT = Math.atan2(ee2, n) * R2D, elT = -Math.atan2(dn, Math.hypot(n, ee2)) * R2D, azC = Math.atan2(d[1], d[0]) * R2D, elC = -Math.asin(clamp(d[2], -1, 1)) * R2D;
+        x = [((azT - azC + 540) % 360) - 180, elT - elC]; e = res(x); if (!e) continue;
+      }
       for (let it = 0; it < 6 && Math.hypot(...e) > 0.05; it++) {
         const h = 0.01, ea = res([x[0] + h, x[1]]), ee = res([x[0], x[1] + h]); if (!ea || !ee) break;
         const J = [[(ea[0] - e[0]) / h, (ee[0] - e[0]) / h], [(ea[1] - e[1]) / h, (ee[1] - e[1]) / h]], det = J[0][0] * J[1][1] - J[0][1] * J[1][0]; if (Math.abs(det) < 1e-9) break;
         const dx = [(-e[0] * J[1][1] + e[1] * J[0][1]) / det, (e[0] * J[1][0] - e[1] * J[0][0]) / det];
         const xn = [x[0] + dx[0], x[1] + dx[1]], en = res(xn); if (!en) break; x = xn; e = en;
       }
-      if (Math.hypot(...e) > 2 || Math.abs(x[0]) > 5 || Math.abs(x[1]) > 5) continue; // implausible: leave this packet unanchored
+      const lim = CFG.anchorFC === 'on' || A.bias ? 15 : 5; if (Math.hypot(...e) > 2 || Math.abs(x[0]) > lim || Math.abs(x[1]) > lim) continue; // implausible: leave this packet unanchored
       r.g.ancAz = x[0]; r.g.ancEl = x[1]; A.n++; A.maxCorr = Math.max(A.maxCorr, Math.hypot(...x));
     }
     if (A.n < R.length * 0.5) { for (const r of S.track.recs) { delete r.g.ancAz; delete r.g.ancEl; } A.n = 0; return; }
@@ -3486,7 +3516,23 @@ function trkVideo() {
     TRK.v.src = S.vidUrl;
   });
 }
-function grabRGB(t) {
+/* watchdog: Chrome occasionally leaves a hidden video stuck mid-seek near damaged stretches of a recording. If a frame
+   does not arrive in 4 s the hidden video is reloaded and the frame sought again; failing that, the last frame is reused
+   (counted in TRK.stuck) so the tracker or mosaic never hangs. */
+async function grabRGB(t) {
+  const race = (p, ms) => Promise.race([p, new Promise(r => setTimeout(() => r(null), ms))]);
+  let G = await race(grabRGB0(t), 4000);
+  if (!G) {
+    TRK.stuck = (TRK.stuck || 0) + 1;
+    try { TRK.v.pause(); TRK.v.removeAttribute('src'); TRK.v.load(); } catch (e) { }
+    TRK.v = null; TRK.noPlay = true; await race(trkVideo(), 6000);
+    if (TRK.v) G = await race(grabRGB0(t), 6000);
+    TRK.noPlay = false;
+  }
+  if (G) TRK.lastG = G; else G = TRK.lastG;
+  return G;
+}
+function grabRGB0(t) {
   return new Promise(res => {
     const v = TRK.v; const done = () => {
       const W = TRK.W = Math.min(960, v.videoWidth || 960), H = TRK.H = Math.round(W * (v.videoHeight || 540) / (v.videoWidth || 960));
@@ -3608,8 +3654,30 @@ function simFit(P0, P1) { // similarity between two point lists (px): returns {d
   return d > 0 ? { dk: Math.hypot(n1, n2) / d, dth: Math.atan2(n2, n1) } : { dk: 1, dth: 0 };
 }
 
+
+/* burned-in symbology (crosshair, reticle, text) inside an outline: its pixels stay put on screen while the scene moves,
+   so they are kept out of the object's points, its template matching and its template learning. K.V marks template
+   cells whose stored appearance came from scene pixels (a cell first seen under the overlay is learned later). */
+function trkOvl(x, y) { const m = TRK.ovl; if (!m) return false; const i = (y / m.f) | 0, j = (x / m.f) | 0; return i >= 0 && j >= 0 && i < m.h && j < m.w && m.m[i * m.w + j] === 1; }
+function trkCellsOnOvl(K, c, k, th) {
+  if (!TRK.ovl) return null; const out = new Uint8Array(K.PT), co = Math.cos(th), si = Math.sin(th), ux = K.ux * k, uy = K.uy * k;
+  for (let j = 0; j < K.TH; j++) for (let i = 0; i < K.TW; i++) { const lx = (i + 0.5 - K.TW / 2) * ux, ly = (j + 0.5 - K.TH / 2) * uy; if (trkOvl(c[0] + lx * co - ly * si, c[1] + lx * si + ly * co)) out[j * K.TW + i] = 1; }
+  return out;
+}
+function trkMaskAt(K, c, k, th) {
+  const on = trkCellsOnOvl(K, c, k, th); if (!on && !K.V) return K.M;
+  const m = []; for (const q of K.M) if ((!on || !on[q]) && (!K.V || K.V[q])) m.push(q);
+  return m.length >= 12 ? Int32Array.from(m) : K.M;
+}
+async function trkOverlay() {
+  // once per video: static symbology from 8 frames spread over the whole video
+  if (TRK.ovlFor === S.vidUrl) return; TRK.ovlFor = S.vidUrl; TRK.ovl = null;
+  if (S.frames.length < 60 || typeof sfmOverlayMask !== 'function') return;
+  try { const m = await sfmOverlayMask(0, S.frames.length - 1); if (m) TRK.ovl = { m: m.m, f: m.f, w: m.w, h: m.h || Math.round(m.m.length / m.w) }; } catch (e) { }
+}
 async function trkStart(o, seed, dir) {
   const v = await trkVideo(); if (!v) return null;
+  await trkOverlay();
   const stopAt = dir > 0 ? (o.samples.find(s => s.src === 'analyst' && s.t > seed.t + 1e-3) || { t: S.dur }).t : ([...o.samples].reverse().find(s => s.src === 'analyst' && s.t < seed.t - 1e-3) || { t: 0 }).t;
   o.samples = o.samples.filter(s => s.src === 'analyst' || s === seed || (dir > 0 ? (s.t <= seed.t + 1e-6 || s.t >= stopAt - 1e-6) : (s.t >= seed.t - 1e-6 || s.t <= stopAt + 1e-6)));
   if (seed.src === 'interp') { seed = { ...seed, src: 'tracker' }; addSample(o, seed); }
@@ -3629,19 +3697,22 @@ async function trkStart(o, seed, dir) {
   const T0 = T.slice(), [t0m, t0sd] = stats(T0, M, PT);
   const kf = seed.src === 'analyst' ? seed.t : seed.kf;
   const GP = grayPyr(G), spx = seed.poly.map(uvToPx), sc = polyC(spx), shr = spx.map(p => [sc[0] + (p[0] - sc[0]) * 0.92, sc[1] + (p[1] - sc[1]) * 0.92]);
-  const pts0 = goodFeatures(GP[0], bboxPx(seed.poly), (x, y) => pointInPoly(x, y, shr), CFG.flowN, Math.max(3, Math.min(bw, bh) / 12));
+  const pts0 = goodFeatures(GP[0], bboxPx(seed.poly), (x, y) => pointInPoly(x, y, shr) && !trkOvl(x, y), CFG.flowN, Math.max(3, Math.min(bw, bh) / 12));
   // ground-locked shape: the analyst outline as a fixed ground shape (ENU offsets about its centre)
   let gShape = null;
   if (S.track && CFG.groundLock) {
     const P0 = makeProjector(S.track.at(seed.t)), gc = P0 && P0.toGround(...pxToUv(c0)), gp = P0 && seed.poly.map(p => P0.toGround(p[0], p[1]));
-    if (gc && !gc.horizon && gp.every(q => q && !q.horizon)) { const m = mpdLat(gc.lat), mo = mpdLon(gc.lat); gShape = gp.map(q => [(q.lon - gc.lon) * mo, (q.lat - gc.lat) * m, q.h]); }
+    // only on reasonably steep views: at grazing angles an outline is mostly vertical faces, not a ground shape
+    const st0 = S.track.at(seed.t), graz = gc && st0 ? Math.atan2(sensAltMSL(st0) - gc.h, Math.hypot((gc.lat - st0.sensLat) * mpdLat(gc.lat), (gc.lon - st0.sensLon) * mpdLon(gc.lat))) * R2D : 90;
+    if (gc && !gc.horizon && gp.every(q => q && !q.horizon) && graz >= CFG.glMinGraz) { const m = mpdLat(gc.lat), mo = mpdLon(gc.lat); gShape = gp.map(q => [(q.lon - gc.lon) * mo, (q.lat - gc.lat) * m, q.h]); }
   }
   // texture inside the outline (shrunk, so the edge contrast doesn't count): point flow needs it
   let sx = 0, sxx = 0, nn = 0; { const sh2 = spx.map(p => [sc[0] + (p[0] - sc[0]) * 0.75, sc[1] + (p[1] - sc[1]) * 0.75]), b2 = bboxPx(seed.poly), L0 = GP[0];
     for (let y = Math.max(0, b2[1] | 0); y < Math.min(L0.h, b2[1] + b2[3]); y++) for (let x = Math.max(0, b2[0] | 0); x < Math.min(L0.w, b2[0] + b2[2]); x++) if (pointInPoly(x, y, sh2)) { const v = L0.d[y * L0.w + x]; sx += v; sxx += v * v; nn++; } }
   const tex = nn > 20 ? Math.sqrt(Math.max(0, sxx / nn - (sx / nn) ** 2)) : 0;
   if (window.FLDBG) FLDBG.push(['pts0', pts0.length, +tex.toFixed(1)]);
-  return { noFlow: pts0.length < 12 || tex < 8, tex, gShape, gHist: [], psiRef: null, GP, pts: pts0, flat, kf, o, dir, seed, stopAt, f, TW, TH, ux, uy, M, PT, T, tm, tsd, T0, t0m, t0sd, base, st: { c: c0, k: 1, th: 0 }, L: lumPyr(G), ov: [0, 0], vel: { gN: 0, gE: 0, u: 0, v: 0 }, lowRun: 0, coast: 0, suspect: [], lastGood: seed, prev: seed, fi: frameIndex(seed.t), n: 0, done: false, why: '', innov: [] };
+  const on0 = trkCellsOnOvl({ PT, TW, TH, ux, uy }, c0, 1, 0);
+  return { V: on0 ? on0.map(x => 1 - x) : null, noFlow: pts0.length < 12 || tex < 8, tex, gShape, gHist: [], psiRef: null, GP, pts: pts0, flat, kf, o, dir, seed, stopAt, f, TW, TH, ux, uy, M, PT, T, tm, tsd, T0, t0m, t0sd, base, st: { c: c0, k: 1, th: 0 }, L: lumPyr(G), ov: [0, 0], vel: { gN: 0, gE: 0, u: 0, v: 0 }, lowRun: 0, coast: 0, suspect: [], lastGood: seed, prev: seed, fi: frameIndex(seed.t), n: 0, done: false, why: '', innov: [] };
 }
 /* rebuild the appearance model (template, mask, base outline, points) from a frame, e.g. after a zoom step */
 function clipPolyFrame(P, W, H, m = 2) { // Sutherland–Hodgman against the frame rectangle (px)
@@ -3660,7 +3731,7 @@ function trkReseed(K, G, GP, polyUv) {
   if (M.length < 16) M = [...Array(PT).keys()]; M = Int32Array.from(M);
   let [tm, tsd] = stats(T, M, PT); if (tsd < 12) { M = Int32Array.from(Array(PT).keys()); [tm, tsd] = stats(T, M, PT); }
   const shr = pp.map(p => [c0[0] + (p[0] - c0[0]) * 0.92, c0[1] + (p[1] - c0[1]) * 0.92]);
-  Object.assign(K, { TW, TH, ux, uy, M, PT, T, tm, tsd, T0: T.slice(), t0m: tm, t0sd: tsd, base, st: { c: c0, k: 1, th: 0 }, GP, pts: goodFeatures(GP[0], [bx, by, bw, bh], (x, y) => pointInPoly(x, y, shr), CFG.flowN, Math.max(3, Math.min(bw, bh) / 12)), gShape: null, scRef: null, a0Ref: null });
+  Object.assign(K, { TW, TH, ux, uy, M, PT, T, tm, tsd, T0: T.slice(), t0m: tm, t0sd: tsd, base, st: { c: c0, k: 1, th: 0 }, GP, pts: goodFeatures(GP[0], [bx, by, bw, bh], (x, y) => pointInPoly(x, y, shr) && !trkOvl(x, y), CFG.flowN, Math.max(3, Math.min(bw, bh) / 12)), gShape: null, scRef: null, a0Ref: null, V: (() => { const on = trkCellsOnOvl({ PT, TW, TH, ux, uy }, c0, 1, 0); return on ? on.map(x => 1 - x) : null; })() });
   return pp.map(pxToUv);
 }
 function trkSearch(K, G, hyp, R, scales, rots, Tt, tm, tsd) {
@@ -3670,8 +3741,9 @@ function trkSearch(K, G, hyp, R, scales, rots, Tt, tm, tsd) {
     const A = sampleRot(G, TRK.W, TRK.H, hyp.c[0], hyp.c[1], ux, uy, th, aw, ah);
     let lb = { sc: -2 };
     const st = R > 6 ? 2 : 1;
-    for (let oy = 0; oy <= 2 * R; oy += st) for (let ox = 0; ox <= 2 * R; ox += st) { const sc = nccAt(A, aw, ah, Tt, K.TW, K.TH, ox, oy, tm, tsd, K.M); if (sc > lb.sc) lb = { sc, ox, oy }; }
-    if (st > 1) for (let oy = Math.max(0, lb.oy - 1); oy <= Math.min(2 * R, lb.oy + 1); oy++) for (let ox = Math.max(0, lb.ox - 1); ox <= Math.min(2 * R, lb.ox + 1); ox++) { const sc = nccAt(A, aw, ah, Tt, K.TW, K.TH, ox, oy, tm, tsd, K.M); if (sc > lb.sc) lb = { sc, ox, oy }; }
+    let Me = K.M; if (TRK.ovl || K.V) { Me = trkMaskAt(K, hyp.c, k, th); if (Me !== K.M) [tm, tsd] = stats(Tt, Me, K.PT); }
+    for (let oy = 0; oy <= 2 * R; oy += st) for (let ox = 0; ox <= 2 * R; ox += st) { const sc = nccAt(A, aw, ah, Tt, K.TW, K.TH, ox, oy, tm, tsd, Me); if (sc > lb.sc) lb = { sc, ox, oy }; }
+    if (st > 1) for (let oy = Math.max(0, lb.oy - 1); oy <= Math.min(2 * R, lb.oy + 1); oy++) for (let ox = Math.max(0, lb.ox - 1); ox <= Math.min(2 * R, lb.ox + 1); ox++) { const sc = nccAt(A, aw, ah, Tt, K.TW, K.TH, ox, oy, tm, tsd, Me); if (sc > lb.sc) lb = { sc, ox, oy }; }
     if (ks !== 1 || dr !== 0) lb.sc -= 0.015; // a scale/rotation change must earn its place
     if (lb.sc > best.sc) {
       const dx = (lb.ox - R) * ux, dy = (lb.oy - R) * uy, co = Math.cos(th), si = Math.sin(th);
@@ -3715,8 +3787,30 @@ async function trkStep(K) {
   // 1) point flow on the object (move, turn, zoom from many points); verified against the template
   const fl = K.noFlow ? null : objFlow(K, K.GP, GP, prev.poly, H[0], gmF ? gm : null); // point flow needs texture on the object
   let flowOK = false;
+  // stationary object (parked vehicle, building): when its points move exactly with the background for several steps,
+  // take scale and rotation from the camera motion (the whole background) rather than the few points on the object
   if (fl) {
-    const fs = { name: 'point flow', ...fl.state }; H.unshift(fs);
+    const regH = gmF && H.find(h => h.name === 'image registration');
+    if (regH) {
+      const ob0 = bboxPx(prev.poly), d = Math.hypot(fl.state.c[0] - regH.c[0], fl.state.c[1] - regH.c[1]), dk = Math.abs(Math.log(fl.state.k / regH.k)), tolPx = Math.max(1, 0.05 * Math.max(ob0[2], ob0[3]));
+      K.statRun = d < tolPx && (K.relRef || 0) < Math.max(0.5, 0.02 * Math.max(ob0[2], ob0[3])) ? (K.statRun || 0) + 1 : 0; // never for something that has been moving (that is occlusion, not parking)
+      if (K.statRun >= 3) { fl.state = { c: [lerp(regH.c[0], fl.state.c[0], 0.3), lerp(regH.c[1], fl.state.c[1], 0.3)], k: regH.k, th: regH.th }; K.accTh = K.accK = 0; }
+      // scale follows the camera (zoom, range) with only a slow deviation from the object's own points: on small or
+      // blurred objects the point-flow scale random-walks by percents per step, which no perspective change does
+      else {
+        // turn and scale relative to the camera go into leaky totals: per-step noise keeps cancelling and stays below
+        // the threshold, a real turn or approach builds up within a few steps and is then applied in full
+        let dth = fl.state.th - regH.th; dth = Math.atan2(Math.sin(dth), Math.cos(dth));
+        K.accTh = (K.accTh || 0) * 0.95 + dth; K.accK = (K.accK || 0) * 0.95 + Math.log(fl.state.k / regH.k);
+        let th = regH.th, k = regH.k;
+        if (Math.abs(K.accTh) > 0.07) { th = regH.th + K.accTh; K.accTh = 0; }
+        if (Math.abs(K.accK) > 0.04) { k = regH.k * Math.exp(K.accK); K.accK = 0; }
+        fl.state = { ...fl.state, k, th };
+      }
+    }
+  }
+  if (fl) {
+    const fs = { name: K.statRun >= 3 ? 'point flow (stationary)' : 'point flow', ...fl.state }; H.unshift(fs);
     const vb = trkSearch(K, G, fs, 0, [1], [0], K.T, K.tm, K.tsd); vb.hyp = fs;
     const strong = fl.n >= 15 && fl.ratio >= 0.6, vis = visFrac(statePoly(K, fs));
     if (vb.sc >= CFG.trackMinScore - 0.1 || (strong && (vb.sc >= 0.3 || vis < 0.7))) { best = vb; flowOK = true; if (vis < 0.7) best.sc = Math.max(best.sc, 0.6); }
@@ -3776,6 +3870,7 @@ async function trkStep(K) {
   }
   // accepted
   const ns = { c: best.c, k: best.k, th: best.th };
+  if (window.KDBG) KDBG.push([+t.toFixed(2), +st.k.toFixed(4), fl ? +fl.state.k.toFixed(4) : null, (H.find(h => h.name === 'image registration') || {}).k ?? null, K.statRun || 0, +best.k.toFixed(4), best.hyp && best.hyp.name, flowOK ? 1 : 0, gm.n, gmF ? 1 : 0]);
   // keep the outline on the object: pull gently toward the centroid of points that move with it (not with the road)
   if (flowOK && fl.movUsed && fl.n >= 10 && visFrac(statePoly(K, ns)) > 0.9) ns.c = [lerp(ns.c[0], fl.cent[0], 0.12), lerp(ns.c[1], fl.cent[1], 0.12)];
   let poly = statePoly(K, ns);
@@ -3816,11 +3911,13 @@ async function trkStep(K) {
     const NT = new Float32Array(3 * K.PT), pa = best.aw * best.ah;
     for (let ch = 0; ch < 3; ch++) for (let j = 0; j < K.TH; j++) for (let i = 0; i < K.TW; i++) NT[ch * K.PT + j * K.TW + i] = best.A[ch * pa + (best.oy + j) * best.aw + best.ox + i];
     // adapt faster once the seed look has changed (turning, zoom)
-    const w = flowOK ? 0.2 : a0.sc >= CFG.trackMinScore ? 0.15 : 0.25; for (let k = 0; k < K.T.length; k++) K.T[k] = K.T[k] * (1 - w) + NT[k] * w; [K.tm, K.tsd] = stats(K.T, K.M, K.PT);
+    const w = flowOK ? 0.2 : a0.sc >= CFG.trackMinScore ? 0.15 : 0.25, on = trkCellsOnOvl(K, best.c, best.k, best.th);
+    for (let k = 0; k < K.T.length; k++) { const q = k % K.PT; if (on && on[q]) continue; if (K.V && !K.V[q]) { K.T[k] = NT[k]; if (k >= 2 * K.PT) K.V[q] = 1; } else K.T[k] = K.T[k] * (1 - w) + NT[k] * w; }
+    [K.tm, K.tsd] = stats(K.T, K.M, K.PT);
   }
   return smp;
 }
-Object.assign(CFG, { groundLock: true });
+Object.assign(CFG, { groundLock: true, glMinGraz: 30 });
 function visFrac(poly) { const b = bboxPx(poly), x0 = Math.max(0, b[0]), y0 = Math.max(0, b[1]), x1 = Math.min(TRK.W, b[0] + b[2]), y1 = Math.min(TRK.H, b[1] + b[3]); return b[2] * b[3] > 0 ? Math.max(0, x1 - x0) * Math.max(0, y1 - y0) / (b[2] * b[3]) : 0; }
 /* a field-of-view step in the metadata near t (encoders often report zoom steps a little late) */
 function fovStepNear(t, done) {
@@ -4192,7 +4289,7 @@ function bgFlowMotion(A, B, guess, excl, mask) {
 /* object points: track, drop those moving with the background (when the object moves relative to it), fit */
 function objFlow(K, A, B, prevPoly, pred, gm) {
   const pp = prevPoly.map(uvToPx), bb = (() => { const xs = pp.map(p => p[0]), ys = pp.map(p => p[1]); return [Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)]; })();
-  const c = polyC(pp), shr = pp.map(p => [c[0] + (p[0] - c[0]) * 0.92, c[1] + (p[1] - c[1]) * 0.92]), inside = (x, y) => pointInPoly(x, y, shr);
+  const c = polyC(pp), shr = pp.map(p => [c[0] + (p[0] - c[0]) * 0.92, c[1] + (p[1] - c[1]) * 0.92]), inside = (x, y) => pointInPoly(x, y, shr) && !trkOvl(x, y);
   let pts = (K.pts || []).filter(p => inside(p[0], p[1]));
   if (pts.length < CFG.flowN * 0.6) pts = pts.concat(goodFeatures(A[0], bb, inside, CFG.flowN - pts.length, Math.max(3, Math.min(bb[2], bb[3]) / 12), 1, pts));
   const why = r => { if (window.FLDBG) FLDBG.push([+(K.prev.t).toFixed(2), r, pts.length]); return null; };
@@ -4954,7 +5051,8 @@ async function mosCameraBA(samples, job, tick, G0, surf, ctrl) {
   for (const s of samples) if (!s.p) s.p = [0, 0, 0, 0];
   let G = [0, 0, 0, 0, 0, 0, 0]; if (G0) G0.forEach((x, i) => { G[i] = x; });
   const DL = [1e-3, 1e-3, 1e-3, 1e-4], DG = [1e-4, 1e-4, 1e-4, 1e-5, 1e-5, 1e-2, 1e-2];
-  const sigA = CFG.mosSigA, PRI = [1 / sigA ** 2, 1 / sigA ** 2, 1 / sigA ** 2, 1 / 0.01 ** 2], PRG = useC ? [1 / 0.05 ** 2, 1 / 0.2 ** 2, 1 / 0.2 ** 2, 1 / 0.03 ** 2, 1 / 0.03 ** 2, 1e-8, 1e-8] : [1 / (CFG.mosSigF / 100) ** 2, 1 / 0.2 ** 2, 1 / 0.2 ** 2, 1 / 0.005 ** 2, 1 / 0.005 ** 2, 1e6, 1e6];
+  const sigA = CFG.mosSigA, PRI = [1 / sigA ** 2, 1 / sigA ** 2, 1 / sigA ** 2, 1 / 0.01 ** 2], fovs = samples.map(s => s.st.hfov).sort((a, b) => a - b), sK = 0.2 * Math.min(1, fovs[fovs.length >> 1] / 10), // radial distortion is negligible on narrow lenses: don't let it soak up geometry errors
+    PRG = useC ? [1 / 0.05 ** 2, 1 / sK ** 2, 1 / sK ** 2, 1 / 0.03 ** 2, 1 / 0.03 ** 2, 1e-8, 1e-8] : [1 / (CFG.mosSigF / 100) ** 2, 1 / sK ** 2, 1 / sK ** 2, 1 / 0.005 ** 2, 1 / 0.005 ** 2, 1e6, 1e6];
   const cam = (s, p, lnF) => { const st = stCorr(s.st, [p[0], p[1], p[2], p[3] + lnF]), R = sensorRot(st); return { st, R, th: Math.tan(st.hfov * D2R / 2), tv: Math.tan(vfovOf(st) * D2R / 2), alt: sensAltMSL(st), mLat: mpdLat(st.sensLat), mLon: mpdLon(st.sensLat) }; };
   const ground = (c, u, v, h) => {
     const d = norm3(mv3(c.R, [1, u * c.th, v * c.tv])); if (d[2] <= 1e-6) return null;
@@ -5344,17 +5442,21 @@ async function mosBuild() {
     const rmsOf = () => { if (!obs.length) return { m: 0, px: 0 }; let sm = 0, sp = 0; const e = obs.map(o => { const r = resid(o), m = Math.hypot(r[0], r[1]); return [m, m / o.sig]; }); e.sort((x, y) => x[0] - y[0]); for (const [m, p] of e) { sm += m * m; sp += p * p; } return { m: Math.sqrt(sm / e.length), px: Math.sqrt(sp / e.length), med: e[e.length >> 1][0], medPx: e.slice().sort((x, y) => x[1] - y[1])[e.length >> 1][1] }; };
     const before = rmsOf();
     const pairsOK = samples.filter(s => s.pairs.length).length;
-    let mode = 'none', camRes = null;
+    let mode = 'none', camRes = null, surfOf = null;
     if (CFG.mosReg && CFG.mosCam && obs.length && samples.every(s => s.st)) {
       // photogrammetric: solve each frame's orientation (az, el, roll, field of view) and one radial lens term from the tie points
       // 1–3: correct each frame (radial distortion, principal point, camera to nadir) and rectify it to the ground;
       // 4: match neighbouring rectified frames; 5: solve orientation from those pairs; then repeat once with the refined model
       let Gc = [0, 0, 0, 0, 0]; for (const s of samples) s.p = [0, 0, 0, 0];
-      const surf = mosSurface(samples);
-      const rect = [];
+      const surf = mosSurface(samples); surfOf = surf;
+      const rect = []; let bestSol = null;
       for (let round = 0; round < 3; round++) {
         job.stage = 'rectify + match ' + (round + 1); await tick();
         const rm = await mosRectMatch(samples, Gc, ovl, zone, south, job, tick, null, surf); rect.push(rm);
+        // a pass that makes the rectified frames agree worse than the best so far is undone (ill-conditioned geometry:
+        // very narrow field of view at grazing angles turns tiny angle errors into large shifts along the line of sight)
+        if (bestSol && rm.med != null && bestSol.med != null && rm.med > 1.3 * bestSol.med) { samples.forEach((s, k) => { s.p = bestSol.p[k].slice(); }); Gc = bestSol.G.slice(); camRes = bestSol.res; rm.reverted = true; break; }
+        if (rm.med != null && (!bestSol || rm.med <= bestSol.med)) bestSol = { med: rm.med, p: samples.map(s => s.p.slice()), G: Gc.slice(), res: camRes };
         if (round === 2 || rm.n < 24) break;
         job.stage = 'orientation solve ' + (round + 1); await tick();
         const r = await mosCameraBA(samples, job, tick, Gc, surf); if (!r) break; camRes = r; Gc = r.G;
@@ -5500,7 +5602,9 @@ async function mosBuild() {
       for (let i = 0; i <= Nn; i++) push(i); for (let j = 1; j <= M; j++) push(j * (Nn + 1) + Nn); for (let i = Nn - 1; i >= 0; i--) push(M * (Nn + 1) + i); for (let j = M - 1; j >= 1; j--) push(j * (Nn + 1));
       const p = corr[k]; return { cam: s.p ? { az: +s.p[0].toFixed(4), el: +s.p[1].toFixed(4), roll: +s.p[2].toFixed(4), focal_pct: +(s.p[3] * 100).toFixed(3) } : null, t: s.t, ring, gsd: s.gsd, matches: s.pairs.length, shift: Math.hypot(p[2], p[3]), scale: p[0] / s.L * 100, rot: Math.atan2(p[1], s.L + p[0]) * R2D };
     });
-    MOS.res = { cv, dcv, zone, south, E0, N0, g: gOut, Wo, Ho, t0, t1, frames, K, pairsOK, nObs: obs.length, before, after, reg: mode !== 'none', mode, cam: camRes && { refInfo: camRes.refInfo, surf: camRes.surf, rect: camRes.rect, G: camRes.G, k1: camRes.k1, before: camRes.before, after: camRes.after, rot: camRes.rot, fov: camRes.fov, ties: camRes.n, links: camRes.links }, limited, cover: cov * gOut * gOut, shiftMed: shifts[shifts.length >> 1], shiftMax: shifts[shifts.length - 1], hud: !!ovl, skipped, blend: CFG.mosBlend, Wf: samples[0].W, Hf: samples[0].H, secs: (performance.now() - T0) / 1000 };
+    const grz = samples.map(s => { const st = s.st || S.track.at(s.t), c = s.ll[(s.M >> 1) * (s.N + 1) + (s.N >> 1)]; if (!st || !c) return null; return Math.atan2(sensAltMSL(st) - (surfOf ? surfOf(c[0], c[1]) : refElev(st)), Math.hypot((c[0] - st.sensLat) * mpdLat(c[0]), (c[1] - st.sensLon) * mpdLon(c[0]))) * R2D; }).filter(isNum).sort((a, b) => a - b);
+    const grazMed = grz.length ? grz[grz.length >> 1] : null;
+    MOS.res = { grazMed, cv, dcv, zone, south, E0, N0, g: gOut, Wo, Ho, t0, t1, frames, K, pairsOK, nObs: obs.length, before, after, reg: mode !== 'none', mode, cam: camRes && { refInfo: camRes.refInfo, surf: camRes.surf, rect: camRes.rect, G: camRes.G, k1: camRes.k1, before: camRes.before, after: camRes.after, rot: camRes.rot, fov: camRes.fov, ties: camRes.n, links: camRes.links }, limited, cover: cov * gOut * gOut, shiftMed: shifts[shifts.length >> 1], shiftMax: shifts[shifts.length - 1], hud: !!ovl, skipped, blend: CFG.mosBlend, Wf: samples[0].W, Hf: samples[0].H, secs: (performance.now() - T0) / 1000 };
     MOS.job = null; buildMosPane(); dirty();
     status('Mosaic: ' + K + ' frames → ' + Wo + '×' + Ho + ' px at ' + fx(gOut, 2) + ' m');
   } catch (e) {
@@ -5703,11 +5807,12 @@ function buildMosPane() {
       R ? h('button', { onclick: mosFit }, 'Zoom map to mosaic') : ''),
     J ? h('div', { class: 'note' }, ({ 'masking overlay': 'Finding burned-in symbology… ', 'collecting frames': 'Choosing and matching frames… ' + (J.n || 0) + ' frames · ', registering: 'Registering frames… ', rendering: 'Stitching… ' }[J.stage] || (J.stage ? J.stage[0].toUpperCase() + J.stage.slice(1) + '… ' : '')) + Math.round(J.p * 100) + '%') : '');
   if (!R) return;
+  if (isNum(R.grazMed) && R.grazMed < 15) p.append(h('div', { class: 'note', style: 'border-color:var(--bad)' }, 'The camera looks at the ground at only ' + fx(R.grazMed, 1) + '° here. A ground mosaic needs a steeper view (roughly 20° or more): at grazing angles most of what is seen is vertical surfaces, each pixel is stretched along the line of sight, and small pointing errors become large shifts. Treat this mosaic as unreliable.'));
   const rows = [['Frames', R.K + ' · ' + tcOf(R.t0) + ' → ' + tcOf(R.t1) + (R.skipped ? ' (' + R.skipped + ' without ground geometry skipped)' : '')],
     ['Output', R.Wo.toLocaleString() + ' × ' + R.Ho.toLocaleString() + ' px at ' + fx(R.g, 2) + ' m' + (R.limited ? ' (coarsened to fit the size limit)' : '') + ' · UTM ' + R.zone + (R.south ? 'S' : 'N') + ' (EPSG:' + UTM.epsg(R.zone, R.south) + ')'],
     ['Covered', R.cover > 1e6 ? fx(R.cover / 1e6, 2) + ' km²' : fx(R.cover / 1e4, 1) + ' ha'],
     ['Matching', R.pairsOK + ' of ' + Math.max(0, R.K - 1) + ' frame pairs matched · ' + R.nObs.toLocaleString() + ' tie points'],
-    ...(R.cam && R.cam.rect ? [['Rectified-frame misfit', R.cam.rect.map((r, i) => (i === 0 ? 'metadata ' : 'pass ' + i + ' ') + (r.med == null ? '–' : fx(r.med, 2) + ' m median / ' + fx(r.p90, 2) + ' m p90')).join(' → ') + ' (' + R.cam.rect[R.cam.rect.length - 1].n.toLocaleString() + ' ties at ' + fx(R.cam.rect[0].gm, 2) + ' m)']] : []),
+    ...(R.cam && R.cam.rect ? [['Rectified-frame misfit', R.cam.rect.map((r, i) => (i === 0 ? 'metadata ' : 'pass ' + i + ' ') + (r.med == null ? '–' : fx(r.med, 2) + ' m median / ' + fx(r.p90, 2) + ' m p90') + (r.reverted ? ' (worse: undone, pass ' + (i - 1) + ' kept)' : '')).join(' → ') + ' (' + R.cam.rect[R.cam.rect.length - 1].n.toLocaleString() + ' ties at ' + fx(R.cam.rect[0].gm, 2) + ' m)']] : []),
     ...(R.cam && R.cam.surf ? [['Ground surface', R.cam.surf]] : []),
     ...(R.cam && R.cam.refInfo ? (R.cam.refInfo.err ? [['Basemap shape', 'not used: ' + R.cam.refInfo.err]] : [['Basemap shape', R.cam.refInfo.n.toLocaleString() + ' control matches in ' + R.cam.refInfo.frames + ' frames (' + R.cam.refInfo.ref.name + ', ' + fx(R.cam.refInfo.ref.res, 2) + ' m) · fit ' + fx(R.cam.refInfo.fitBefore.med, 2) + ' → ' + fx(R.cam.refInfo.fit.med, 2) + ' m median'], ['Check points (held out)', R.cam.refInfo.check ? R.cam.refInfo.check.n + ' points: ' + fx(R.cam.refInfo.checkBefore.med, 2) + ' → ' + fx(R.cam.refInfo.check.med, 2) + ' m median, ' + fx(R.cam.refInfo.checkBefore.p90, 2) + ' → ' + fx(R.cam.refInfo.check.p90, 2) + ' m p90 (after the shared offset)' : '–'], ['Basemap vs metadata position', fx(R.cam.refInfo.t[0], 1) + ' m E, ' + fx(R.cam.refInfo.t[1], 1) + ' m N (' + (CFG.mosRefPos ? 'applied' : 'reported only — position kept from the metadata') + ')']]) : []),
     ...(R.cam ? [['Orientation solve', R.cam.ties.toLocaleString() + ' tie points over ' + R.cam.links + ' frame links · reprojection median ' + fx(R.cam.before.med, 2) + ' → ' + fx(R.cam.after.med, 2) + ' px, 90th percentile ' + fx(R.cam.before.p90, 1) + ' → ' + fx(R.cam.after.p90, 1) + ' px'], ['Camera calibration', 'focal setting ' + fx((Math.exp(R.cam.G[0]) - 1) * 100, 2) + '% · radial k1 ' + fx(R.cam.G[1], 4) + ', k2 ' + fx(R.cam.G[2], 4)], ['Interior orientation', 'principal point offset ' + fx(R.cam.G[3] * R.Wf / 2, 1) + ', ' + fx(R.cam.G[4] * R.Hf / 2, 1) + ' px'], ['Exterior orientation', 'per frame: pointing ' + fx(R.cam.rot, 3) + '° RMS · focal ' + fx(R.cam.fov, 2) + '% RMS about the mean']] : []),
@@ -5740,7 +5845,8 @@ function buildFilePane() {
   const kv = rows => h('table', null, rows.map(([k, val]) => h('tr', null, h('td', { class: 'k' }, k), h('td', null, val))));
   p.append(h('h3', null, 'Source'), kv([
     ['File', S.name || '–'],
-    ...(S.anchor && S.anchor.on ? [['Pointing', 'anchored to encoder frame centre: camera angles wobble ' + S.anchor.noiseRaw.toFixed(1) + ' m vs encoder centre ' + S.anchor.noiseEnc.toFixed(1) + ' m (corrections ≤ ' + S.anchor.maxCorr.toFixed(2) + '°; Settings → Anchor to encoder centre)']] : []),
+    ...(S.quirk && S.quirk.absLOS ? [['Gimbal angles', h('span', { class: 'pa' }, 'the encoder writes true (earth-referenced) azimuth/elevation into the ST 0601 relative-angle tags; platform attitude is not applied')]] : []),
+    ...(S.anchor && S.anchor.on ? [['Pointing', 'anchored to encoder frame centre: ' + (S.anchor.bias ? 'camera angles missed it by ' + (isFinite(S.anchor.biasMed) ? fx(S.anchor.biasMed, 0) + ' m' : 'the ground entirely') : 'camera angles wobble ' + fx(S.anchor.noiseRaw, 1) + ' m vs encoder centre ' + fx(S.anchor.noiseEnc, 1) + ' m') + ' (corrections ≤ ' + S.anchor.maxCorr.toFixed(2) + '°; Settings → Anchor to encoder centre)']] : []),
     ...(S.libItemId ? [['Library item', S.libItemId + ' (bookmarks saved to catalogue)']] : []), ['Size', S.size ? (S.size / 1048576).toFixed(2) + ' MB' : '–'],
     ['Container', S.kind === 'ts' ? 'MPEG-2 TS (' + S.ts.det.ps + '-byte packets, ' + S.ts.pktCount.toLocaleString() + ' pkts)' : S.kind === 'mp4' ? 'ISO BMFF (MP4/MOV)' : 'sidecar only'],
     ['Duration', fmtT(S.dur)],
